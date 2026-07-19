@@ -1,0 +1,6 @@
+{
+  "name": "ACCFIN Log Sheet Portal",
+  "description": "Daily timetable, log sheets, and real-time staff-substitution management system for the Department of Accounting & Finance, AM Jain College.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
