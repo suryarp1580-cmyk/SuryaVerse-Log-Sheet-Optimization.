@@ -41,6 +41,12 @@ export interface Substitution {
   absentStaffId: string;
   substituteStaffId: string | null;
   remarks: string;
+  
+  // Swapping fields
+  isSwap?: boolean;
+  swapWithPeriod?: number;
+  swappedSubjectCode?: string;
+  swappedStaffIds?: string[];
 }
 
 // Ergononmic interface for grid rendering

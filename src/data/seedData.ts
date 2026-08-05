@@ -22,7 +22,7 @@ export const initialStaff: Staff[] = [
   { id: 'staff-OJ', code: 'OJ', fullName: 'DR. M. OPHELIA JANEFER', isActive: true, onLeave: false },
   { id: 'staff-PM', code: 'PM', fullName: 'DR. P. MARIAPPAN', isActive: true, onLeave: false },
   { id: 'staff-PS', code: 'PS', fullName: 'DR. B. PADMASHREE', isActive: true, onLeave: false },
-  { id: 'staff-RP', code: 'RP', fullName: 'DR. P. RAJENDRA PRASAD', isActive: true, onLeave: false },
+  { id: 'staff-RP', code: 'RP', fullName: 'DR. P. RAJENDRA PRASAD (HOD)', isActive: true, onLeave: false },
   { id: 'staff-RT', code: 'RT', fullName: 'MR. R. THIRUMURUGAN', isActive: true, onLeave: false },
   { id: 'staff-SS', code: 'SS', fullName: 'MS. SHILPA S', isActive: true, onLeave: false },
   { id: 'staff-TP', code: 'TP', fullName: 'MS. T. PARKAVI', isActive: true, onLeave: false }

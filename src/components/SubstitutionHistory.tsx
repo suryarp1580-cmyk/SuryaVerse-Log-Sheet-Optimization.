@@ -25,11 +25,9 @@ export default function SubstitutionHistory({
   };
 
   const filteredSubs = substitutions.filter(sub => {
+    // Only show if a substitute staff member was assigned
+    if (!sub.substituteStaffId) return false;
     if (!dateFilter) return true;
-    // Assuming we don't have a direct date, wait, where does logDate come from?
-    // Let's see: we can either search inside sub.id or we can attach logDate directly inside the active list
-    // or log sheet date!
-    // Ah! Let's display the log sheet dates correctly by joining with log_sheets or just displaying the entries!
     return true;
   });
 
@@ -95,8 +93,8 @@ export default function SubstitutionHistory({
                     <td className="p-3 border border-[#cbc4cd] text-center">
                       <div className="inline-flex items-center gap-1.5 bg-red-100/50 border border-red-200 px-2 py-1 rounded">
                         <span className="font-bold text-red-700 text-xs">{getStaffCode(sub.absentStaffId)}</span>
-                        <span className="text-[10px] text-slate-500 font-semibold truncate max-w-[120px]">
-                          {getStaffName(sub.absentStaffId).split(' ').slice(1).join(' ')}
+                        <span className="text-[10px] text-slate-500 font-semibold truncate max-w-[150px]" title={getStaffName(sub.absentStaffId)}>
+                          {getStaffName(sub.absentStaffId)}
                         </span>
                       </div>
                     </td>
@@ -106,8 +104,8 @@ export default function SubstitutionHistory({
                       {sub.substituteStaffId ? (
                         <div className="inline-flex items-center gap-1.5 bg-emerald-100/50 border border-emerald-200 px-2 py-1 rounded">
                           <span className="font-extrabold text-emerald-800 text-xs">{getStaffCode(sub.substituteStaffId)}</span>
-                          <span className="text-[10px] text-slate-600 font-semibold truncate max-w-[120px]">
-                            {getStaffName(sub.substituteStaffId).split(' ').slice(1).join(' ')}
+                          <span className="text-[10px] text-slate-600 font-semibold truncate max-w-[150px]" title={getStaffName(sub.substituteStaffId)}>
+                            {getStaffName(sub.substituteStaffId)}
                           </span>
                         </div>
                       ) : (

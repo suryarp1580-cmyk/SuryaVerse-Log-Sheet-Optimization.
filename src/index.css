@@ -21,9 +21,16 @@
 }
 
 @media print {
+  @page {
+    size: A4 landscape;
+    margin: 8mm 10mm 8mm 10mm;
+  }
+  
   body {
     background: white !important;
-    color: black !important;
+    color: #161b27 !important;
+    padding: 0 !important;
+    margin: 0 !important;
   }
   
   .print\:hidden {
@@ -50,6 +57,139 @@
   /* Prevent page breaks inside grid tables */
   table, tr, td, th {
     page-break-inside: avoid !important;
+  }
+
+  /* Make sure the main layout content spans 100% width and hides margins */
+  #printable-log-sheet-content {
+    width: 100% !important;
+    max-width: 100% !important;
+    padding: 0 !important;
+    margin: 0 auto !important;
+    border: none !important;
+    box-shadow: none !important;
+    background: transparent !important;
+  }
+
+  /* Ensure the letterhead is structured and fits perfectly */
+  .letterhead-container {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    margin-bottom: 10px !important;
+    padding-bottom: 6px !important;
+    border-bottom: 2px solid #1C3A70 !important;
+  }
+  .letterhead-container img {
+    height: 48px !important;
+    margin-bottom: 2px !important;
+  }
+  .letterhead-container h1 {
+    font-size: 18px !important;
+    line-height: 1.1 !important;
+    color: #203978 !important;
+  }
+  .letterhead-container p {
+    font-size: 8.5px !important;
+    margin-top: 1px !important;
+  }
+
+  /* Make the Info Banner compact */
+  #pdf-info-banner {
+    margin-bottom: 12px !important;
+    padding-bottom: 6px !important;
+    font-size: 10px !important;
+  }
+
+  /* Compact the table cells for high-density landscape print */
+  .log-sheet-table-wrapper {
+    box-shadow: none !important;
+    border-radius: 4px !important;
+    border: 1px solid #cbc4cd !important;
+  }
+  
+  .log-sheet-table {
+    min-width: 100% !important;
+    width: 100% !important;
+    table-layout: fixed !important;
+  }
+
+  .log-sheet-table .log-sheet-grid-cell, .log-sheet-table td, .log-sheet-table th {
+    height: 52px !important;
+    padding: 4px 2px !important;
+    font-size: 10px !important;
+    border-bottom: 1px solid #cbc4cd !important;
+    border-right: 1px solid #cbc4cd !important;
+  }
+
+  /* Class label column size and styles */
+  .class-column-header, .class-column-cell {
+    width: 130px !important;
+    max-width: 130px !important;
+    padding-left: 6px !important;
+    padding-right: 6px !important;
+  }
+  
+  /* BREAK spacer column size and styles */
+  .break-column-header, .break-column-cell {
+    width: 56px !important;
+    max-width: 56px !important;
+  }
+  .break-column-cell {
+    height: 52px !important;
+  }
+  .break-column-cell div {
+    font-size: 8px !important;
+    gap: 0px !important;
+    line-height: 1.1 !important;
+  }
+
+  /* Room column size and styles */
+  .room-column-header, .room-column-cell {
+    width: 65px !important;
+    max-width: 65px !important;
+  }
+  .room-column-cell {
+    padding: 4px !important;
+  }
+
+  /* Text elements sizing inside grid cell */
+  .log-sheet-grid-cell div {
+    font-size: 10px !important;
+  }
+  .log-sheet-grid-cell .h-12 {
+    height: 32px !important;
+  }
+  
+  /* Badges sizes inside grid cell */
+  .log-sheet-grid-cell .inline-flex {
+    font-size: 8px !important;
+    padding: 0.5px 3px !important;
+    line-height: 1 !important;
+  }
+
+  /* Compact signature section */
+  .signature-section {
+    margin-top: 16px !important;
+    padding-bottom: 0 !important;
+  }
+  .signature-section .grid, .signature-section div.grid {
+    margin-top: 10px !important;
+    gap: 24px !important;
+  }
+  .signature-section div {
+    font-size: 9px !important;
+  }
+  .signature-section .h-8 {
+    height: 16px !important;
+    margin-bottom: 4px !important;
+  }
+
+  /* Compact legal and generation stamp footer */
+  .signature-section + div, .mt-8 {
+    margin-top: 12px !important;
+    padding-top: 4px !important;
+    font-size: 8px !important;
   }
 }
 

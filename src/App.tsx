@@ -14,6 +14,24 @@ import { jsPDF } from 'jspdf';
 import { Printer, CheckCircle, RefreshCw, Calendar, Layers, Sparkles, X, AlertTriangle, Info, FileDown } from 'lucide-react';
 
 export default function App() {
+  // Authentication State
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    return localStorage.getItem('accfin_authenticated') === 'true';
+  });
+  const [authId, setAuthId] = useState<string>('');
+  const [authError, setAuthError] = useState<string>('');
+
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (authId === 'Rp@amjc') {
+      setIsAuthenticated(true);
+      localStorage.setItem('accfin_authenticated', 'true');
+      setAuthError('');
+    } else {
+      setAuthError('Please enter correct ID');
+    }
+  };
+
   // Navigation State
   const [currentView, setCurrentView] = useState<string>('log_sheets');
 
@@ -39,6 +57,7 @@ export default function App() {
   const [isResetConfirmOpen, setIsResetConfirmOpen] = useState<boolean>(false);
   const [isPrintHelpOpen, setIsPrintHelpOpen] = useState<boolean>(false);
   const [isGeneratingPDF, setIsGeneratingPDF] = useState<boolean>(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
 
   // Lazy Initialization & LocalStorage Load
   useEffect(() => {
@@ -46,11 +65,16 @@ export default function App() {
     const savedStaff = localStorage.getItem('accfin_staff');
     if (savedStaff) {
       const parsed = JSON.parse(savedStaff);
-      const mapped = parsed.map((s: any) => ({
-        ...s,
-        onLeave: s.onLeave !== undefined ? s.onLeave : false
-      }));
+      const mapped = parsed.map((s: any) => {
+        const found = initialStaff.find(is => is.id === s.id);
+        return {
+          ...s,
+          ...(found ? { fullName: found.fullName, code: found.code } : {}),
+          onLeave: s.onLeave !== undefined ? s.onLeave : false
+        };
+      });
       setStaffList(mapped);
+      localStorage.setItem('accfin_staff', JSON.stringify(mapped));
     } else {
       setStaffList(initialStaff);
       localStorage.setItem('accfin_staff', JSON.stringify(initialStaff));
@@ -84,32 +108,16 @@ export default function App() {
 
     // 4. Substitutions & Presets
     const savedSubs = localStorage.getItem('accfin_substitutions');
-    const presetSubs: Substitution[] = [
-      {
-        id: 'sub-preset-1',
-        logSheetId: 'log-sheet-preset',
-        classId: 'class-I-AF-A',
-        period: 5,
-        absentStaffId: 'staff-TP',
-        substituteStaffId: 'staff-VJ',
-        remarks: 'Pre-approved medical leave coverage.'
-      },
-      {
-        id: 'sub-preset-2',
-        logSheetId: 'log-sheet-preset',
-        classId: 'class-II-AF-A',
-        period: 4,
-        absentStaffId: 'staff-NS',
-        substituteStaffId: 'staff-SK',
-        remarks: 'Mutual department exchange.'
-      }
-    ];
 
     if (savedSubs) {
-      setSubstitutions(JSON.parse(savedSubs));
+      const parsed = JSON.parse(savedSubs);
+      // Filter out preset substitutions containing fake IDs or preset IDs
+      const cleaned = parsed.filter((sub: any) => !sub.id.startsWith('sub-preset-'));
+      setSubstitutions(cleaned);
+      localStorage.setItem('accfin_substitutions', JSON.stringify(cleaned));
     } else {
-      setSubstitutions(presetSubs);
-      localStorage.setItem('accfin_substitutions', JSON.stringify(presetSubs));
+      setSubstitutions([]);
+      localStorage.setItem('accfin_substitutions', JSON.stringify([]));
     }
   }, []);
 
@@ -180,7 +188,7 @@ export default function App() {
 
   // Create or Update Substitution
   const handleConfirmSubstitution = (
-    subData: Omit<Substitution, 'id' | 'logSheetId'> | null
+    subData: Omit<Substitution, 'id' | 'logSheetId'> | Omit<Substitution, 'id' | 'logSheetId'>[] | null
   ) => {
     // 1. Ensure log sheet exists. If not, create one
     let targetSheet = currentLogSheet;
@@ -197,19 +205,73 @@ export default function App() {
       saveLogSheets(updatedSheets);
     }
 
-    const updatedSubs = [...substitutions];
+    let updatedSubs = [...substitutions];
 
-    // Remove any existing substitution for this class section & period
-    const existingIndex = updatedSubs.findIndex(
-      s => s.logSheetId === targetSheet!.id && s.classId === activeCell!.classId && s.period === activeCell!.period
-    );
-
-    if (existingIndex > -1) {
-      updatedSubs.splice(existingIndex, 1);
+    // If subData is null (request to clear/reset)
+    if (!subData) {
+      const existingSub = substitutions.find(
+        s => s.logSheetId === targetSheet!.id && s.classId === activeCell!.classId && s.period === activeCell!.period
+      );
+      if (existingSub?.isSwap && existingSub.swapWithPeriod) {
+        // Clear both sides of the swap
+        updatedSubs = updatedSubs.filter(
+          s => !(s.logSheetId === targetSheet!.id && s.classId === activeCell!.classId && (s.period === activeCell!.period || s.period === existingSub.swapWithPeriod))
+        );
+        showToast('Period swap successfully cleared and reset.', 'info');
+      } else {
+        // Clear single substitution
+        updatedSubs = updatedSubs.filter(
+          s => !(s.logSheetId === targetSheet!.id && s.classId === activeCell!.classId && s.period === activeCell!.period)
+        );
+        showToast('Adjustment cleared/reset successfully.', 'info');
+      }
+      saveSubstitutions(updatedSubs);
+      setActiveCell(null);
+      return;
     }
 
-    // If subData is not null, add the new substitution
-    if (subData) {
+    // If subData is an array (representing a swap)
+    if (Array.isArray(subData)) {
+      // Find all periods involved in this swap to clear their existing substitutions
+      const swapPeriods = subData.map(item => item.period);
+      updatedSubs = updatedSubs.filter(
+        s => !(s.logSheetId === targetSheet!.id && s.classId === activeCell!.classId && swapPeriods.includes(s.period))
+      );
+
+      // Add the new swap entries
+      subData.forEach(item => {
+        updatedSubs.push({
+          id: `sub-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+          logSheetId: targetSheet!.id,
+          classId: item.classId,
+          period: item.period,
+          absentStaffId: item.absentStaffId,
+          substituteStaffId: item.substituteStaffId,
+          remarks: item.remarks,
+          isSwap: item.isSwap,
+          swapWithPeriod: item.swapWithPeriod,
+          swappedSubjectCode: item.swappedSubjectCode,
+          swappedStaffIds: item.swappedStaffIds
+        });
+      });
+
+      showToast('Period swap successfully applied.', 'success');
+    } else {
+      // Normal single substitution
+      // If there's an existing swap on either side, we should clear both sides first to avoid corrupted state
+      const existingSub = substitutions.find(
+        s => s.logSheetId === targetSheet!.id && s.classId === activeCell!.classId && s.period === activeCell!.period
+      );
+      if (existingSub?.isSwap && existingSub.swapWithPeriod) {
+        updatedSubs = updatedSubs.filter(
+          s => !(s.logSheetId === targetSheet!.id && s.classId === activeCell!.classId && (s.period === activeCell!.period || s.period === existingSub.swapWithPeriod))
+        );
+      } else {
+        updatedSubs = updatedSubs.filter(
+          s => !(s.logSheetId === targetSheet!.id && s.classId === activeCell!.classId && s.period === activeCell!.period)
+        );
+      }
+
       updatedSubs.push({
         id: `sub-${Date.now()}`,
         logSheetId: targetSheet.id,
@@ -220,8 +282,6 @@ export default function App() {
         remarks: subData.remarks
       });
       showToast('Staff substitution successfully processed.', 'success');
-    } else {
-      showToast('Adjustment cleared/reset successfully.', 'info');
     }
 
     saveSubstitutions(updatedSubs);
@@ -282,11 +342,11 @@ export default function App() {
 
       // Capture with custom settings to ensure clean, high-DPI rendering
       const canvas = await html2canvas(element, {
-        scale: 2, // Retain high-resolution crisp text
+        scale: 2.5, // High resolution crisp text and vectors
         useCORS: true,
         logging: false,
         backgroundColor: '#ffffff',
-        windowWidth: 1240, // Lock visual width during snapshot for consistent column layout
+        windowWidth: 1200, // Fixed width snapshotting for precise responsive column alignment
         onclone: (clonedDoc) => {
           // Find the info banner in the cloned document and force it to be visible
           const banner = clonedDoc.getElementById('pdf-info-banner');
@@ -295,22 +355,188 @@ export default function App() {
             banner.classList.add('flex');
             banner.style.display = 'flex';
           }
+
+          // Inject custom styles into the snapshot clone to make the print layout extremely compact,
+          // beautifully proportioned, and perfectly fitted for standard landscape page margins
+          const style = clonedDoc.createElement('style');
+          style.innerHTML = `
+            #printable-log-sheet-content {
+              width: 1120px !important;
+              max-width: 1120px !important;
+              padding: 24px !important;
+              margin: 0 auto !important;
+              border: none !important;
+              box-shadow: none !important;
+              background-color: #ffffff !important;
+            }
+
+            /* Ensure the letterhead is structured and fits perfectly */
+            .letterhead-container {
+              display: flex !important;
+              flex-direction: row !important;
+              align-items: center !important;
+              justify-content: space-between !important;
+              margin-bottom: 10px !important;
+              padding-bottom: 6px !important;
+              border-bottom: 2px solid #1C3A70 !important;
+            }
+            .letterhead-container img {
+              height: 48px !important;
+              margin-bottom: 2px !important;
+            }
+            .letterhead-container h1 {
+              font-size: 18px !important;
+              line-height: 1.1 !important;
+              color: #203978 !important;
+            }
+            .letterhead-container p {
+              font-size: 8.5px !important;
+              margin-top: 1px !important;
+            }
+
+            /* Make the Info Banner compact */
+            #pdf-info-banner {
+              margin-bottom: 12px !important;
+              padding-bottom: 6px !important;
+              font-size: 10px !important;
+            }
+
+            /* Compact the table cells for high-density landscape print */
+            .log-sheet-table-wrapper {
+              box-shadow: none !important;
+              border-radius: 4px !important;
+              border: 1px solid #cbc4cd !important;
+            }
+            
+            .log-sheet-table {
+              min-width: 100% !important;
+              width: 100% !important;
+              table-layout: fixed !important;
+            }
+
+            .log-sheet-table .log-sheet-grid-cell, .log-sheet-table td, .log-sheet-table th {
+              height: 52px !important;
+              padding: 4px 2px !important;
+              font-size: 10px !important;
+              border-bottom: 1px solid #cbc4cd !important;
+              border-right: 1px solid #cbc4cd !important;
+            }
+
+            /* Class label column size and styles */
+            .class-column-header, .class-column-cell {
+              width: 130px !important;
+              max-width: 130px !important;
+              padding-left: 6px !important;
+              padding-right: 6px !important;
+            }
+            
+            /* BREAK spacer column size and styles */
+            .break-column-header, .break-column-cell {
+              width: 56px !important;
+              max-width: 56px !important;
+            }
+            .break-column-cell {
+              height: 52px !important;
+            }
+            .break-column-cell div {
+              font-size: 8px !important;
+              gap: 0px !important;
+              line-height: 1.1 !important;
+            }
+
+            /* Room column size and styles */
+            .room-column-header, .room-column-cell {
+              width: 65px !important;
+              max-width: 65px !important;
+            }
+            .room-column-cell {
+              padding: 4px !important;
+            }
+
+            /* Text elements sizing inside grid cell */
+            .log-sheet-grid-cell div {
+              font-size: 10px !important;
+            }
+            .log-sheet-grid-cell .h-12 {
+              height: 32px !important;
+            }
+            
+            /* Badges sizes inside grid cell */
+            .log-sheet-grid-cell .inline-flex {
+              font-size: 8px !important;
+              padding: 0.5px 3px !important;
+              line-height: 1 !important;
+            }
+
+            /* Compact signature section */
+            .signature-section {
+              margin-top: 16px !important;
+              padding-bottom: 0 !important;
+            }
+            .signature-section .grid, .signature-section div.grid {
+              margin-top: 10px !important;
+              gap: 24px !important;
+            }
+            .signature-section div {
+              font-size: 9px !important;
+            }
+            .signature-section .h-8 {
+              height: 16px !important;
+              margin-bottom: 4px !important;
+            }
+
+            /* Compact legal and generation stamp footer */
+            .signature-section + div, .mt-8 {
+              margin-top: 12px !important;
+              padding-top: 4px !important;
+              font-size: 8px !important;
+            }
+          `;
+          clonedDoc.head.appendChild(style);
         }
       });
 
       const imgData = canvas.toDataURL('image/jpeg', 1.0);
       
-      // Calculate responsive dimensions for jsPDF page matching the canvas ratio
-      const widthPx = canvas.width / 2;
-      const heightPx = canvas.height / 2;
-
+      // Initialize landscape A4 document
       const pdf = new jsPDF({
         orientation: 'landscape',
-        unit: 'px',
-        format: [widthPx, heightPx]
+        unit: 'mm',
+        format: 'a4'
       });
 
-      pdf.addImage(imgData, 'JPEG', 0, 0, widthPx, heightPx);
+      // Get precise document dimensions
+      const pageWidth = pdf.internal.pageSize.getWidth(); // 297mm
+      const pageHeight = pdf.internal.pageSize.getHeight(); // 210mm
+
+      // Standard consistent margins of 10mm
+      const margin = 10;
+      const maxPrintWidth = pageWidth - (margin * 2);
+      const maxPrintHeight = pageHeight - (margin * 2);
+
+      // Determine the best layout dimensions preserving aspect ratio
+      const contentRatio = canvas.width / canvas.height;
+      const printableRatio = maxPrintWidth / maxPrintHeight;
+
+      let printWidth = maxPrintWidth;
+      let printHeight = maxPrintHeight;
+
+      if (contentRatio > printableRatio) {
+        // Limited by available printable width
+        printWidth = maxPrintWidth;
+        printHeight = maxPrintWidth / contentRatio;
+      } else {
+        // Limited by available printable height
+        printHeight = maxPrintHeight;
+        printWidth = maxPrintHeight * contentRatio;
+      }
+
+      // Compute centered horizontal & vertical offsets
+      const xOffset = margin + (maxPrintWidth - printWidth) / 2;
+      const yOffset = margin + (maxPrintHeight - printHeight) / 2;
+
+      // Render the image on standard A4 page perfectly aligned
+      pdf.addImage(imgData, 'JPEG', xOffset, yOffset, printWidth, printHeight);
 
       const formattedDate = new Date(selectedDate).toLocaleDateString('en-GB', {
         day: '2-digit',
@@ -349,27 +575,7 @@ export default function App() {
     };
     setLogSheets([defaultLog]);
 
-    const presetSubs: Substitution[] = [
-      {
-        id: 'sub-preset-1',
-        logSheetId: 'log-sheet-preset',
-        classId: 'class-I-AF-A',
-        period: 5,
-        absentStaffId: 'staff-TP',
-        substituteStaffId: 'staff-VJ',
-        remarks: 'Pre-approved medical leave coverage.'
-      },
-      {
-        id: 'sub-preset-2',
-        logSheetId: 'log-sheet-preset',
-        classId: 'class-II-AF-A',
-        period: 4,
-        absentStaffId: 'staff-NS',
-        substituteStaffId: 'staff-SK',
-        remarks: 'Mutual department exchange.'
-      }
-    ];
-    setSubstitutions(presetSubs);
+    setSubstitutions([]);
 
     setSelectedDate('2024-05-20');
     setSelectedDayOrder(3);
@@ -443,6 +649,67 @@ export default function App() {
     }
   };
 
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-[#F5F5F0] flex flex-col items-center justify-center p-4 font-sans select-none">
+        <div className="w-full max-w-md bg-white border border-[#cbc4cd] rounded-xl shadow-2xl p-8 space-y-6">
+          <div className="text-center space-y-2">
+            <div className="inline-flex w-14 h-14 bg-[#556B2F]/10 rounded-full items-center justify-center text-[#556B2F] mb-2">
+              <Sparkles className="w-7 h-7" />
+            </div>
+            <h1 className="font-serif font-black text-2xl text-[#161b27] tracking-tight">
+              A.M.J.C. Shift II
+            </h1>
+            <p className="text-xs font-bold text-[#556B2F] uppercase tracking-widest">
+              Department of Accounting & Finance
+            </p>
+            <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+              Staff Log & Substitution System
+            </p>
+          </div>
+
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="block text-[10px] font-sans font-extrabold text-slate-500 uppercase tracking-wider">
+                Admin Login ID
+              </label>
+              <input
+                type="password"
+                placeholder="Enter Admin Login ID"
+                value={authId}
+                onChange={e => {
+                  setAuthId(e.target.value);
+                  if (authError) setAuthError('');
+                }}
+                className="w-full px-4 py-2.5 border border-[#cbc4cd] rounded-lg bg-slate-50 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-[#556B2F]/20 text-[#161b27] text-center tracking-widest placeholder:tracking-normal placeholder:text-slate-400"
+                autoFocus
+              />
+              {authError && (
+                <p className="text-[11px] text-rose-600 font-bold flex items-center justify-center gap-1 mt-1">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                  {authError}
+                </p>
+              )}
+            </div>
+
+            <button
+              type="submit"
+              className="w-full py-2.5 bg-[#556B2F] hover:opacity-95 text-white font-bold text-xs uppercase tracking-widest rounded-lg shadow-md transition-all active:scale-98 cursor-pointer"
+            >
+              Enter Portal
+            </button>
+          </form>
+
+          <div className="pt-4 border-t border-slate-100 text-center">
+            <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">
+              Protected Administrative Session
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#F5F5F0] text-[#161b27] flex">
       {/* Sidebar (Hidden during browser prints for print readiness!) */}
@@ -451,16 +718,25 @@ export default function App() {
           currentView={currentView}
           onViewChange={setCurrentView}
           onResetData={() => setIsResetConfirmOpen(true)}
+          onLogout={() => {
+            setIsAuthenticated(false);
+            localStorage.removeItem('accfin_authenticated');
+            setAuthId('');
+          }}
+          isCollapsed={isSidebarCollapsed}
+          onToggleCollapse={() => setIsSidebarCollapsed(prev => !prev)}
         />
       </div>
 
       {/* Main Canvas Area */}
-      <div className="flex-1 ml-64 print:ml-0 min-h-screen flex flex-col relative">
+      <div className={`flex-1 ${isSidebarCollapsed ? 'ml-16' : 'ml-64'} transition-all duration-300 print:ml-0 min-h-screen flex flex-col relative`}>
         {/* Top App Bar (Hidden during prints) */}
         <div className="print:hidden">
           <Header
             viewTitle={getViewTitle()}
             status={currentView === 'log_sheets' ? (currentLogSheet?.status || 'draft') : null}
+            isSidebarCollapsed={isSidebarCollapsed}
+            onToggleSidebar={() => setIsSidebarCollapsed(prev => !prev)}
           />
         </div>
 
@@ -568,9 +844,12 @@ export default function App() {
               />
 
               {/* Footer Legal & Generation Stamp */}
-              <div className="mt-8 pt-4 border-t border-[#cbc4cd] text-[10px] text-slate-400 font-semibold flex justify-between select-none">
-                <p>GENERATED ON: {new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).toUpperCase()} {new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })} IST</p>
-                <p>AMJC-AF-SLS-2026-V2.5</p>
+              <div className="mt-8 pt-4 border-t border-[#cbc4cd] text-[10px] text-slate-400 font-semibold flex flex-col sm:flex-row justify-between items-center sm:items-end gap-2 select-none print:mt-4 print:pt-2">
+                <p className="text-center sm:text-left text-slate-500">GENERATED ON: {new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).toUpperCase()} {new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })} IST</p>
+                <div className="text-center sm:text-right">
+                  <p className="font-mono text-slate-500">AMJC-AF-SLS-2026-SV1.0</p>
+                  <p className="text-[9px] font-bold text-[#203978] mt-0.5 tracking-wide">Powered by SuryaVerse Studio</p>
+                </div>
               </div>
             </div>
           )}
