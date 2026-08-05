@@ -654,8 +654,20 @@ export default function App() {
       <div className="min-h-screen bg-[#F5F5F0] flex flex-col items-center justify-center p-4 font-sans select-none">
         <div className="w-full max-w-md bg-white border border-[#cbc4cd] rounded-xl shadow-2xl p-8 space-y-6">
           <div className="text-center space-y-2">
-            <div className="inline-flex w-14 h-14 bg-[#556B2F]/10 rounded-full items-center justify-center text-[#556B2F] mb-2">
-              <Sparkles className="w-7 h-7" />
+            {/* Round Shape Logo Emblem */}
+            <div className="relative inline-flex items-center justify-center mb-2 group">
+              {/* Outer Ambient Glow Ring */}
+              <div className="absolute -inset-1 bg-gradient-to-r from-amber-500 via-[#556B2F] to-amber-600 rounded-full blur opacity-30 group-hover:opacity-50 transition duration-500"></div>
+
+              {/* Round Logo Container */}
+              <div className="relative w-20 h-20 rounded-full bg-[#0A0D06] border-2 border-amber-400/80 shadow-lg flex items-center justify-center overflow-hidden">
+                <img
+                  src="https://res.cloudinary.com/oomxhs6j/image/upload/v1785955932/ChatGPT_Image_Aug_5_2026_12_40_26_PM_zrruvh.png"
+                  alt="ACCFIN Logo"
+                  className="w-full h-full object-cover rounded-full"
+                  referrerPolicy="no-referrer"
+                />
+              </div>
             </div>
             <h1 className="font-serif font-black text-2xl text-[#161b27] tracking-tight">
               A.M.J.C. Shift II
