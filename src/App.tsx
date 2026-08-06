@@ -9,9 +9,10 @@ import SubstitutionDrawer from './components/SubstitutionDrawer';
 import DashboardView from './components/DashboardView';
 import StaffDirectory from './components/StaffDirectory';
 import SubstitutionHistory from './components/SubstitutionHistory';
+import VideoIntroAnimation from './components/VideoIntroAnimation';
 import html2canvas from 'html2canvas-pro';
 import { jsPDF } from 'jspdf';
-import { Printer, CheckCircle, RefreshCw, Calendar, Layers, Sparkles, X, AlertTriangle, Info, FileDown } from 'lucide-react';
+import { Printer, CheckCircle, RefreshCw, Calendar, Layers, Sparkles, X, AlertTriangle, Info, FileDown, Film } from 'lucide-react';
 
 export default function App() {
   // Authentication State
@@ -20,6 +21,7 @@ export default function App() {
   });
   const [authId, setAuthId] = useState<string>('');
   const [authError, setAuthError] = useState<string>('');
+  const [showIntro, setShowIntro] = useState<boolean>(true);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -650,6 +652,10 @@ export default function App() {
   };
 
   if (!isAuthenticated) {
+    if (showIntro) {
+      return <VideoIntroAnimation onComplete={() => setShowIntro(false)} />;
+    }
+
     return (
       <div className="min-h-screen bg-[#F5F5F0] flex flex-col items-center justify-center p-4 font-sans select-none">
         <div className="w-full max-w-md bg-white border border-[#cbc4cd] rounded-xl shadow-2xl p-8 space-y-6">
@@ -712,10 +718,18 @@ export default function App() {
             </button>
           </form>
 
-          <div className="pt-4 border-t border-slate-100 text-center">
+          <div className="pt-4 border-t border-slate-100 flex flex-col items-center gap-2">
             <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">
               Protected Administrative Session
             </p>
+            <button
+              type="button"
+              onClick={() => setShowIntro(true)}
+              className="text-[10px] font-extrabold text-[#556B2F] hover:underline cursor-pointer tracking-wider uppercase mt-1 flex items-center gap-1.5"
+            >
+              <Film className="w-3 h-3" />
+              Replay Logo Opening Video
+            </button>
           </div>
         </div>
       </div>
@@ -734,6 +748,7 @@ export default function App() {
             setIsAuthenticated(false);
             localStorage.removeItem('accfin_authenticated');
             setAuthId('');
+            setShowIntro(true);
           }}
           isCollapsed={isSidebarCollapsed}
           onToggleCollapse={() => setIsSidebarCollapsed(prev => !prev)}
