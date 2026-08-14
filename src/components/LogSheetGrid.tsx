@@ -112,10 +112,19 @@ export default function LogSheetGrid({
             activeSub.isSwap ? (
               <div className="mt-1 flex flex-col items-center justify-center gap-0.5">
                 <div className="flex flex-wrap items-center justify-center gap-1 text-[11px] text-[#161b27] font-bold">
-                  {(activeSub.swappedStaffIds || []).map(id => staffList.find(s => s.id === id)?.code || '?').join(', ')}
+                  {(activeSub.swappedStaffIds || (activeSub.substituteStaffId ? [activeSub.substituteStaffId] : [])).map(
+                    id => staffList.find(s => s.id === id)?.code || '?'
+                  ).join(', ') || 'FREE'}
                 </div>
-                <div className="mt-0.5 inline-flex items-center px-1.5 py-0.5 rounded-xs bg-blue-100 text-blue-800 text-[9px] font-extrabold shadow-2xs border border-blue-200">
-                  SWAPPED
+                <div className="flex items-center gap-1 mt-0.5">
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-xs bg-blue-100 text-blue-800 text-[9px] font-extrabold shadow-2xs border border-blue-200">
+                    SWAP (P{activeSub.swapWithPeriod})
+                  </span>
+                  {activeSub.substituteStaffId && (
+                    <span className="inline-flex items-center px-1.5 py-0.5 rounded-xs bg-[#cbeb8a] text-[#374e00] text-[9px] font-extrabold shadow-2xs border border-[#516b19]/10">
+                      SUB
+                    </span>
+                  )}
                 </div>
               </div>
             ) : (

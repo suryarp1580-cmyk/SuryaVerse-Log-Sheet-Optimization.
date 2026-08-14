@@ -8,6 +8,7 @@ interface SidebarProps {
   onLogout: () => void;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
+  loggedInUser?: string;
 }
 
 export default function Sidebar({
@@ -16,8 +17,10 @@ export default function Sidebar({
   onResetData,
   onLogout,
   isCollapsed,
-  onToggleCollapse
+  onToggleCollapse,
+  loggedInUser = 'Rp@amjc'
 }: SidebarProps) {
+  const isCreator = loggedInUser.trim().toLowerCase() === 'suryaverse';
   return (
     <aside
       className={`${
@@ -53,12 +56,20 @@ export default function Sidebar({
 
       {/* Access Level Tag (When expanded) */}
       {!isCollapsed && (
-        <div className="p-3 bg-white rounded border border-[#cbc4cd] shadow-xs transition-opacity duration-200">
+        <div className={`p-3 rounded border shadow-xs transition-all duration-200 ${
+          isCreator 
+            ? 'bg-gradient-to-br from-blue-50 via-indigo-50/70 to-blue-100/60 border-blue-300 shadow-blue-500/10' 
+            : 'bg-blue-50/60 border-blue-200/80'
+        }`}>
           <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-[#556B2F] animate-pulse"></div>
-            <p className="font-sans font-bold text-xs text-[#161b27]">Admin Access</p>
+            <div className={`w-2 h-2 rounded-full ${isCreator ? 'bg-blue-600 shadow-xs shadow-blue-500' : 'bg-blue-500'} animate-pulse`}></div>
+            <p className={`font-sans font-bold text-xs ${isCreator ? 'text-blue-950 font-black tracking-wide' : 'text-blue-950'}`}>
+              {isCreator ? 'Admin Creator' : 'Admin Access'}
+            </p>
           </div>
-          <p className="text-[11px] text-[#49454d] font-medium mt-0.5">Head of Department</p>
+          <p className={`text-[11px] font-semibold mt-0.5 ${isCreator ? 'text-blue-700 tracking-wider' : 'text-blue-600'}`}>
+            {isCreator ? 'SuryaVerse' : 'Head of Department'}
+          </p>
         </div>
       )}
 

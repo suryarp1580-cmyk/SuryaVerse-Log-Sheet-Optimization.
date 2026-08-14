@@ -20,14 +20,20 @@ export default function App() {
     return localStorage.getItem('accfin_authenticated') === 'true';
   });
   const [authId, setAuthId] = useState<string>('');
+  const [loggedInUser, setLoggedInUser] = useState<string>(() => {
+    return localStorage.getItem('accfin_logged_user') || 'Rp@amjc';
+  });
   const [authError, setAuthError] = useState<string>('');
   const [showIntro, setShowIntro] = useState<boolean>(true);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    if (authId === 'Rp@amjc') {
+    const trimmedId = authId.trim();
+    if (trimmedId === 'Rp@amjc' || trimmedId.toLowerCase() === 'suryaverse') {
       setIsAuthenticated(true);
+      setLoggedInUser(trimmedId);
       localStorage.setItem('accfin_authenticated', 'true');
+      localStorage.setItem('accfin_logged_user', trimmedId);
       setAuthError('');
     } else {
       setAuthError('Please enter correct ID');
@@ -747,11 +753,14 @@ export default function App() {
           onLogout={() => {
             setIsAuthenticated(false);
             localStorage.removeItem('accfin_authenticated');
+            localStorage.removeItem('accfin_logged_user');
             setAuthId('');
+            setLoggedInUser('Rp@amjc');
             setShowIntro(true);
           }}
           isCollapsed={isSidebarCollapsed}
           onToggleCollapse={() => setIsSidebarCollapsed(prev => !prev)}
+          loggedInUser={loggedInUser}
         />
       </div>
 

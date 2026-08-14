@@ -1,5 +1,5 @@
 import React from 'react';
-import { Bell, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { Bell } from 'lucide-react';
 
 interface HeaderProps {
   viewTitle: string;
@@ -8,20 +8,11 @@ interface HeaderProps {
   onToggleSidebar?: () => void;
 }
 
-export default function Header({ viewTitle, status, isSidebarCollapsed, onToggleSidebar }: HeaderProps) {
+export default function Header({ viewTitle, status }: HeaderProps) {
   return (
     <header className="sticky top-0 z-30 bg-white border-b border-[#cbc4cd] h-14 px-6 flex justify-between items-center shadow-xs">
       {/* Title & Status */}
       <div className="flex items-center gap-3 select-none">
-        {onToggleSidebar && (
-          <button
-            onClick={onToggleSidebar}
-            title={isSidebarCollapsed ? "Open Sidebar" : "Close Sidebar"}
-            className="p-1.5 text-[#556B2F] hover:bg-[#F5F5F0] rounded transition-colors cursor-pointer"
-          >
-            {isSidebarCollapsed ? <PanelLeftOpen className="w-5 h-5" /> : <PanelLeftClose className="w-5 h-5" />}
-          </button>
-        )}
         <h1 className="font-serif font-bold text-xl text-[#161b27] tracking-tight">{viewTitle}</h1>
         {status && (
           <div

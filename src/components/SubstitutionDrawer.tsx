@@ -106,11 +106,16 @@ export default function SubstitutionDrawer({
   // Initialize from existing substitution if present
   useEffect(() => {
     if (currentSubstitution) {
-      setAbsentStaffId(currentSubstitution.absentStaffId);
-      setSelectedSubId(currentSubstitution.substituteStaffId);
+      setAbsentStaffId(currentSubstitution.absentStaffId || (slotStaff[0]?.id ?? ''));
+      setSelectedSubId(
+        currentSubstitution.substituteStaffId ||
+        (currentSubstitution.swappedStaffIds && currentSubstitution.swappedStaffIds.length > 0
+          ? currentSubstitution.swappedStaffIds[0]
+          : null)
+      );
       setRemarks(currentSubstitution.remarks || '');
       if (currentSubstitution.isSwap) {
-        setActiveTab('swap');
+        setActiveTab('substitute');
       } else {
         setActiveTab('substitute');
       }
@@ -127,8 +132,42 @@ export default function SubstitutionDrawer({
     }
   }, [currentSubstitution, entry, staffList]);
 
-  // Find free staff list for this Day Order + Period
-  const freeStaff = getFreeStaff(entry.dayOrder, period, staffList, timetableEntries);
+  // Find free staff list for this Day Order + Period considering current log sheet substitutions & swaps
+  const getDynamicFreeStaff = (dayOrder: number, p: number): Staff[] => {
+    const busyStaffIds = new Set<string>();
+
+    // For all timetable entries at this dayOrder and period
+    timetableEntries.forEach(tEntry => {
+      if (tEntry.dayOrder === dayOrder && tEntry.period === p && !tEntry.excludedFromSubstitution) {
+        // Check if there is a substitution on currentLogSheet for this class and period
+        const sub = currentLogSheet
+          ? substitutions.find(s => s.logSheetId === currentLogSheet.id && s.classId === tEntry.classId && s.period === p)
+          : null;
+
+        if (sub) {
+          if (sub.isSwap && sub.swappedStaffIds) {
+            sub.swappedStaffIds.forEach(id => busyStaffIds.add(id));
+          } else if (sub.substituteStaffId) {
+            busyStaffIds.add(sub.substituteStaffId);
+          }
+        } else {
+          // Master scheduled staff
+          tEntry.staffIds.forEach(id => {
+            const s = staffList.find(st => st.id === id);
+            if (s && !s.onLeave) {
+              busyStaffIds.add(id);
+            }
+          });
+        }
+      }
+    });
+
+    return staffList
+      .filter(s => s.isActive && !s.onLeave && !busyStaffIds.has(s.id))
+      .sort((a, b) => a.code.localeCompare(b.code));
+  };
+
+  const freeStaff = getDynamicFreeStaff(entry.dayOrder, period);
   
   // Helper to check if a staff member already teaches this specific class section at any other period/day-order
   const teachesThisClass = (staffId: string): boolean => {
@@ -164,18 +203,13 @@ export default function SubstitutionDrawer({
 
     // 3. Adjustments for swap
     if (proposedSwapPeriod !== undefined) {
-      // Find original staff for Period A (period)
-      const originalStaffA = entry.staffIds;
-      // Find original staff for Period B (proposedSwapPeriod)
-      const entryB = timetableEntries.find(
-        e => e.classId === classSection.id && e.dayOrder === entry.dayOrder && e.period === proposedSwapPeriod
-      );
-      const originalStaffB = entryB ? entryB.staffIds : [];
+      const stateA = getPeriodCurrentState(period);
+      const stateB = getPeriodCurrentState(proposedSwapPeriod);
 
-      if (originalStaffA.includes(staffId)) {
+      if (stateA.staffIds.includes(staffId)) {
         normalClassesCount -= 1;
       }
-      if (originalStaffB.includes(staffId)) {
+      if (stateB.staffIds.includes(staffId)) {
         normalClassesCount -= 1;
       }
     }
@@ -200,16 +234,13 @@ export default function SubstitutionDrawer({
     // 5. Add the current proposed adjustment
     let currentAdjustmentCount = 0;
     if (proposedSwapPeriod !== undefined) {
-      const originalStaffA = entry.staffIds;
-      const entryB = timetableEntries.find(
-        e => e.classId === classSection.id && e.dayOrder === entry.dayOrder && e.period === proposedSwapPeriod
-      );
-      const originalStaffB = entryB ? entryB.staffIds : [];
+      const stateA = getPeriodCurrentState(period);
+      const stateB = getPeriodCurrentState(proposedSwapPeriod);
 
-      if (originalStaffB.includes(staffId)) {
+      if (stateB.staffIds.includes(staffId)) {
         currentAdjustmentCount += 1; // teaches Period A now
       }
-      if (originalStaffA.includes(staffId)) {
+      if (stateA.staffIds.includes(staffId)) {
         currentAdjustmentCount += 1; // teaches Period B now
       }
     } else {
@@ -231,7 +262,21 @@ export default function SubstitutionDrawer({
     const mEntry = timetableEntries.find(
       e => e.classId === classSection.id && e.dayOrder === entry.dayOrder && e.period === p
     );
-    if (!mEntry) return { subjectCode: 'Free', staffCodes: [], staffIds: [], isSwap: false, isSub: false, sub: null, entry: null };
+    if (!mEntry) {
+      return {
+        subjectCode: 'Free',
+        staffCodes: [],
+        staffIds: [],
+        effectiveStaffIds: [],
+        isSwap: false,
+        isSub: false,
+        sub: null,
+        entry: null,
+        absentStaffId: null,
+        substituteStaffId: null,
+        swapWithPeriod: null
+      };
+    }
 
     // Check if there is an active substitution/swap saved for this period on this log sheet
     const sub = currentLogSheet
@@ -242,14 +287,20 @@ export default function SubstitutionDrawer({
 
     if (sub) {
       if (sub.isSwap) {
+        const assignedIds = sub.swappedStaffIds || (sub.substituteStaffId ? [sub.substituteStaffId] : []);
+        const assignedCodes = assignedIds.map(id => staffList.find(s => s.id === id)?.code || '?');
         return {
-          subjectCode: sub.swappedSubjectCode || '',
-          staffIds: sub.swappedStaffIds || [],
-          staffCodes: (sub.swappedStaffIds || []).map(id => staffList.find(s => s.id === id)?.code || '?'),
+          subjectCode: sub.swappedSubjectCode || mEntry.subjectCode,
+          staffIds: assignedIds,
+          effectiveStaffIds: assignedIds,
+          staffCodes: assignedCodes.length > 0 ? assignedCodes : ['FREE'],
           isSwap: true,
-          isSub: false,
+          isSub: !!sub.substituteStaffId,
           sub,
-          entry: mEntry
+          entry: mEntry,
+          absentStaffId: sub.absentStaffId || null,
+          substituteStaffId: sub.substituteStaffId || null,
+          swapWithPeriod: sub.swapWithPeriod || null
         };
       } else {
         // Normal substitution
@@ -257,11 +308,15 @@ export default function SubstitutionDrawer({
         return {
           subjectCode: mEntry.subjectCode,
           staffIds: sub.substituteStaffId ? [sub.substituteStaffId] : [],
-          staffCodes: subStaff ? [subStaff.code] : ['FREE'],
+          effectiveStaffIds: sub.substituteStaffId ? [sub.substituteStaffId] : [],
+          staffCodes: subStaff ? [subStaff.code] : (sub.substituteStaffId ? ['?'] : ['FREE']),
           isSwap: false,
           isSub: true,
           sub,
-          entry: mEntry
+          entry: mEntry,
+          absentStaffId: sub.absentStaffId || null,
+          substituteStaffId: sub.substituteStaffId || null,
+          swapWithPeriod: null
         };
       }
     }
@@ -270,82 +325,88 @@ export default function SubstitutionDrawer({
     return {
       subjectCode: mEntry.subjectCode,
       staffIds: mEntry.staffIds,
+      effectiveStaffIds: mEntry.staffIds,
       staffCodes: mStaff.map(s => s.code),
       isSwap: false,
       isSub: false,
       sub: null,
-      entry: mEntry
+      entry: mEntry,
+      absentStaffId: mStaff.find(s => s.onLeave)?.id || mStaff[0]?.id || null,
+      substituteStaffId: null,
+      swapWithPeriod: null
     };
   };
 
   const executeSwap = (targetPeriod: number) => {
-    // Get original states for current period and target period
-    const entryA = entry;
-    // Find master timetable entry for target period
-    const entryB = timetableEntries.find(
-      e => e.classId === classSection.id && e.dayOrder === entry.dayOrder && e.period === targetPeriod
-    );
+    // Get effective current state for Period A (period) and Period B (targetPeriod)
+    const stateA = getPeriodCurrentState(period);
+    const stateB = getPeriodCurrentState(targetPeriod);
 
-    if (!entryB) return;
+    if (!stateB.entry) return;
 
-    // We swap the subjects and staff lists of entryA and entryB
-    // Entry A gets:
-    const subjectCodeForA = entryB.subjectCode;
-    const staffIdsForA = entryB.staffIds;
+    // What Period A currently has:
+    const subjectA = stateA.subjectCode;
+    // If user currently selected a substitute in drawer for Period A, use selectedSubId!
+    const effectiveStaffIdsA = selectedSubId
+      ? [selectedSubId]
+      : (stateA.effectiveStaffIds.length > 0 ? stateA.effectiveStaffIds : (entry.staffIds));
+    const effectiveAbsentStaffIdA = absentStaffId || stateA.absentStaffId || entry.staffIds[0] || '';
+    const effectiveSubStaffIdA = selectedSubId || stateA.substituteStaffId || (effectiveStaffIdsA[0] ?? null);
 
-    // Entry B gets:
-    const subjectCodeForB = entryA.subjectCode;
-    const staffIdsForB = entryA.staffIds;
+    // What Period B currently has:
+    const subjectB = stateB.subjectCode;
+    const effectiveStaffIdsB = stateB.effectiveStaffIds.length > 0 ? stateB.effectiveStaffIds : (stateB.entry.staffIds);
+    const effectiveAbsentStaffIdB = stateB.absentStaffId || stateB.entry.staffIds[0] || '';
+    const effectiveSubStaffIdB = stateB.substituteStaffId || (effectiveStaffIdsB[0] ?? null);
 
-    // Create the two substitution entries
-    const swapEntryA = {
+    // Swap: Period A gets Period B's subject and staff
+    const swapEntryA: Omit<Substitution, 'id' | 'logSheetId'> = {
       classId: classSection.id,
       period: period, // Period A
-      absentStaffId: absentStaffId || entryA.staffIds[0],
-      substituteStaffId: staffIdsForA[0] || null,
+      absentStaffId: effectiveAbsentStaffIdB,
+      substituteStaffId: effectiveSubStaffIdB,
       remarks: `Swapped with Period ${targetPeriod}`,
       isSwap: true,
       swapWithPeriod: targetPeriod,
-      swappedSubjectCode: subjectCodeForA,
-      swappedStaffIds: staffIdsForA
+      swappedSubjectCode: subjectB,
+      swappedStaffIds: effectiveStaffIdsB
     };
 
-    const swapEntryB = {
+    // Swap: Period B gets Period A's subject and staff (including the assigned substitute!)
+    const swapEntryB: Omit<Substitution, 'id' | 'logSheetId'> = {
       classId: classSection.id,
       period: targetPeriod, // Period B
-      absentStaffId: staffIdsForA[0] || '', // the original staff of Period B is absent in Period B
-      substituteStaffId: absentStaffId || entryA.staffIds[0],
+      absentStaffId: effectiveAbsentStaffIdA,
+      substituteStaffId: effectiveSubStaffIdA,
       remarks: `Swapped with Period ${period}`,
       isSwap: true,
       swapWithPeriod: period,
-      swappedSubjectCode: subjectCodeForB,
-      swappedStaffIds: staffIdsForB
+      swappedSubjectCode: subjectA,
+      swappedStaffIds: effectiveStaffIdsA
     };
 
     onConfirm([swapEntryA, swapEntryB]);
   };
 
   const handleSwapClick = (targetPeriod: number) => {
-    if (!absentStaffId) {
-      alert('Please select an original staff member for the current period first.');
-      return;
-    }
-
     const stateB = getPeriodCurrentState(targetPeriod);
     const staffIdsB = stateB.staffIds;
 
+    const currentStaffToCheck = absentStaffId || slotStaff[0]?.id;
+
     // Calculate projected workload for both sides
-    const workloadA = getProjectedWorkload(absentStaffId, null, targetPeriod);
-    
     let warningStaffId: string | null = null;
     let warningStaffName = '';
     let warningTotal = 0;
 
-    if (workloadA === 4 || workloadA === 5 || workloadA > 5) {
-      const s = staffList.find(st => st.id === absentStaffId);
-      warningStaffId = absentStaffId;
-      warningStaffName = s?.fullName || s?.code || '';
-      warningTotal = workloadA;
+    if (currentStaffToCheck) {
+      const workloadA = getProjectedWorkload(currentStaffToCheck, null, targetPeriod);
+      if (workloadA === 4 || workloadA === 5 || workloadA > 5) {
+        const s = staffList.find(st => st.id === currentStaffToCheck);
+        warningStaffId = currentStaffToCheck;
+        warningStaffName = s?.fullName || s?.code || '';
+        warningTotal = workloadA;
+      }
     }
 
     if (!warningStaffId) {
@@ -376,7 +437,6 @@ export default function SubstitutionDrawer({
   // Filter and sort available substitutes:
   // 1. Exclude the absent staff member
   // 2. Hard cap at 5 hours/day — exclude if taking this substitution assignment would cause total daily workload to exceed 5 hours (> 5)
-  //    (5th hour CAN work. Crossing 5 hours to 6+ hours is excluded and hidden from select substitute)
   // 3. Sort by priority tier (Tier 1: teaches this class, Tier 2: everyone else), then by current hours today ascending (least-loaded first)
   const availableSubstitutes = freeStaff
     .filter(s => s.id !== absentStaffId)
@@ -397,9 +457,8 @@ export default function SubstitutionDrawer({
     : availableSubstitutes.slice(0, 4);
 
   const handleConfirm = () => {
-    if (!absentStaffId) {
-      alert('Please mark an absent staff member.');
-      return;
+    if (!absentStaffId && slotStaff.length > 0) {
+      setAbsentStaffId(slotStaff[0].id);
     }
 
     if (selectedSubId) {
@@ -417,10 +476,26 @@ export default function SubstitutionDrawer({
       }
     }
 
+    // If current cell is already part of a swap, preserve swap structure while updating substitute/remarks
+    if (currentSubstitution?.isSwap) {
+      onConfirm({
+        classId: classSection.id,
+        period,
+        absentStaffId: absentStaffId || currentSubstitution.absentStaffId || entry.staffIds[0],
+        substituteStaffId: selectedSubId,
+        remarks: remarks || currentSubstitution.remarks,
+        isSwap: true,
+        swapWithPeriod: currentSubstitution.swapWithPeriod,
+        swappedSubjectCode: currentSubstitution.swappedSubjectCode,
+        swappedStaffIds: selectedSubId ? [selectedSubId] : []
+      });
+      return;
+    }
+
     onConfirm({
       classId: classSection.id,
       period,
-      absentStaffId,
+      absentStaffId: absentStaffId || entry.staffIds[0],
       substituteStaffId: selectedSubId,
       remarks
     });
@@ -462,7 +537,14 @@ export default function SubstitutionDrawer({
             </div>
             <div className="flex items-center gap-1.5">
               <BookOpen className="w-4 h-4 text-[#556B2F]" />
-              <span className="uppercase">Subject: {entry.subjectCode}</span>
+              <span className="uppercase">
+                Subject: {currentSubstitution?.isSwap ? currentSubstitution.swappedSubjectCode : entry.subjectCode}
+              </span>
+              {currentSubstitution?.isSwap && (
+                <span className="bg-blue-100 text-blue-800 text-[9px] font-bold px-2 py-0.5 rounded-full border border-blue-200">
+                  Swapped with P{currentSubstitution.swapWithPeriod}
+                </span>
+              )}
             </div>
             {isBlankCell && absentStaffId && (
               <div className="flex items-center gap-1.5 text-red-700 bg-red-100/50 border border-red-200 px-2.5 py-0.5 rounded-sm">
@@ -485,7 +567,7 @@ export default function SubstitutionDrawer({
                   : 'border-transparent text-slate-500 hover:text-slate-800'
               }`}
             >
-              Assign Substitute
+              Assign / Change Substitute
             </button>
             <button
               onClick={() => setActiveTab('swap')}
@@ -495,20 +577,20 @@ export default function SubstitutionDrawer({
                   : 'border-transparent text-slate-500 hover:text-slate-800'
               }`}
             >
-              Switch Periods
+              Switch Periods (Swap Hour)
             </button>
           </div>
 
           {activeTab === 'swap' ? (
             <div className="space-y-4">
               <div className="text-xs font-bold text-slate-600 bg-slate-100 p-3 rounded border border-slate-200">
-                Switching periods within <span className="text-[#556B2F] font-extrabold">{classSection.yearLabel} — SEC {classSection.section}</span> only
+                Switching periods within <span className="text-[#556B2F] font-extrabold">{classSection.yearLabel} — SEC {classSection.section}</span>
               </div>
 
               {/* Selection info */}
               <div className="p-3 bg-blue-50 border border-blue-200 text-blue-950 rounded-lg text-xs font-semibold leading-relaxed">
-                <span className="font-bold block mb-1">🔄 Period Swapping Guide</span>
-                You are swapping <span className="underline">Period {period} ({entry.subjectCode})</span> with another class period of your choice below. Both periods' subjects and teachers will be swapped.
+                <span className="font-bold block mb-1">🔄 Period Swapping & Substitute Handover</span>
+                Swapping will exchange <span className="underline font-bold">Period {period} ({currentSubstitution?.isSwap ? currentSubstitution.swappedSubjectCode : entry.subjectCode})</span> with your target period. Any assigned substitute faculty for this class hour will automatically swap and be assigned to the new period.
               </div>
 
               {/* List of periods */}
@@ -518,7 +600,7 @@ export default function SubstitutionDrawer({
                     <tr className="bg-slate-50 border-b border-[#cbc4cd] text-[10px] font-bold text-[#49454d] uppercase tracking-wider">
                       <th className="p-3">Period</th>
                       <th className="p-3">Subject</th>
-                      <th className="p-3">Staff</th>
+                      <th className="p-3">Current Staff / Substitute</th>
                       <th className="p-3 text-right">Action</th>
                     </tr>
                   </thead>
@@ -526,16 +608,9 @@ export default function SubstitutionDrawer({
                     {[1, 2, 3, 4, 5].map(p => {
                       const pState = getPeriodCurrentState(p);
                       const isCurrent = p === period;
-                      const hasOnLeave = pState.staffIds.some(id => {
-                        const s = staffList.find(st => st.id === id);
-                        return s?.onLeave === true;
-                      });
-
-                      const currentStaffIsOnLeave = absentStaffId ? staffList.find(s => s.id === absentStaffId)?.onLeave === true : false;
-                      const isEligible = !isCurrent && !!pState.entry && !hasOnLeave && !currentStaffIsOnLeave;
 
                       return (
-                        <tr key={p} className={`text-xs font-medium ${isCurrent ? 'bg-amber-50/40' : ''}`}>
+                        <tr key={p} className={`text-xs font-medium ${isCurrent ? 'bg-amber-50/50' : 'hover:bg-slate-50/80'}`}>
                           <td className="p-3 font-bold text-slate-900">
                             P{p}
                             <span className="text-[10px] text-slate-400 font-medium block mt-0.5">
@@ -546,17 +621,20 @@ export default function SubstitutionDrawer({
                             {pState.subjectCode}
                             {pState.isSwap && (
                               <span className="ml-1.5 inline-flex px-1.5 py-0.5 text-[9px] font-bold bg-blue-100 text-blue-800 rounded">
-                                Swapped
-                              </span>
-                            )}
-                            {pState.isSub && (
-                              <span className="ml-1.5 inline-flex px-1.5 py-0.5 text-[9px] font-bold bg-amber-100 text-amber-800 rounded">
-                                Substituted
+                                Swapped (P{pState.swapWithPeriod})
                               </span>
                             )}
                           </td>
                           <td className="p-3 text-slate-600 font-semibold">
-                            {pState.staffCodes.join(', ') || 'Free'}
+                            {pState.substituteStaffId ? (
+                              <span className="inline-flex items-center gap-1 text-[#374e00] bg-[#cbeb8a] px-2 py-0.5 rounded text-[11px] font-extrabold border border-[#516b19]/20">
+                                SUB: {staffList.find(s => s.id === pState.substituteStaffId)?.code || '?'}
+                              </span>
+                            ) : pState.staffCodes.length > 0 ? (
+                              <span>{pState.staffCodes.join(', ')}</span>
+                            ) : (
+                              <span className="text-amber-700 font-bold text-[11px]">Free / No Staff</span>
+                            )}
                           </td>
                           <td className="p-3 text-right">
                             {isCurrent ? (
@@ -567,20 +645,12 @@ export default function SubstitutionDrawer({
                               <span className="text-slate-400 text-[10px] italic">
                                 No entry
                               </span>
-                            ) : hasOnLeave ? (
-                              <span className="inline-flex px-2 py-1 bg-red-50 text-red-700 border border-red-200 font-bold text-[10px] rounded uppercase tracking-wider">
-                                Staff on Leave
-                              </span>
-                            ) : currentStaffIsOnLeave ? (
-                              <span className="inline-flex px-2 py-1 bg-red-50 text-red-700 border border-red-200 font-bold text-[10px] rounded uppercase tracking-wider">
-                                Current Staff on Leave
-                              </span>
                             ) : (
                               <button
                                 onClick={() => handleSwapClick(p)}
-                                className="px-3 py-1 bg-blue-50 hover:bg-blue-100 border border-blue-300 text-blue-700 text-[10px] font-extrabold rounded uppercase tracking-wider transition-colors cursor-pointer"
+                                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-extrabold rounded shadow-xs uppercase tracking-wider transition-all transform active:scale-95 cursor-pointer"
                               >
-                                Swap with this
+                                Swap with P{p}
                               </button>
                             )}
                           </td>
