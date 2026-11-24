@@ -31,6 +31,9 @@ export interface LogSheet {
   logDate: string; // YYYY-MM-DD
   dayOrder: number; // 1 to 6
   status: 'draft' | 'finalized';
+  finalizedAt?: string;
+  totalAbsentees?: number;
+  totalSubstitutions?: number;
 }
 
 export interface Substitution {
@@ -57,4 +60,17 @@ export interface GridCell {
   originalStaff: Staff[];
   substitution: Substitution | null;
   substituteStaff: Staff | null;
+}
+
+// Database snapshot and backup record structure for Supabase backups table
+export interface BackupRecord {
+  id: string;
+  backup_label: string;
+  created_at: string;
+  created_by: string;
+  staff_snapshot: any[];
+  class_sections_snapshot: any[];
+  timetable_entries_snapshot: any[];
+  log_sheets_snapshot: any[];
+  substitutions_snapshot: any[];
 }

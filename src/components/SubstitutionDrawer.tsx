@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Calendar, Clock, BookOpen, AlertCircle, Save, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { Staff, ClassSection, TimetableEntry, Substitution, LogSheet } from '../types';
 import { getFreeStaff } from '../lib/substitutionEngine';
+import { findStaffMember } from '../lib/staffUtils';
 
 interface SubstitutionDrawerProps {
   classSection: ClassSection;
@@ -68,8 +69,8 @@ export default function SubstitutionDrawer({
   currentLogSheet
 }: SubstitutionDrawerProps) {
   // Get all staff assigned to this timetable slot
-  const slotStaff = entry.staffIds
-    .map(id => staffList.find(s => s.id === id))
+  const slotStaff = (entry.staffIds || [])
+    .map(id => findStaffMember(staffList, id))
     .filter((s): s is Staff => !!s);
 
   // States
@@ -153,9 +154,9 @@ export default function SubstitutionDrawer({
         } else {
           // Master scheduled staff
           tEntry.staffIds.forEach(id => {
-            const s = staffList.find(st => st.id === id);
+            const s = findStaffMember(staffList, id);
             if (s && !s.onLeave) {
-              busyStaffIds.add(id);
+              busyStaffIds.add(s.id);
             }
           });
         }
@@ -171,9 +172,13 @@ export default function SubstitutionDrawer({
   
   // Helper to check if a staff member already teaches this specific class section at any other period/day-order
   const teachesThisClass = (staffId: string): boolean => {
+    const target = findStaffMember(staffList, staffId);
     return timetableEntries.some(e => 
       e.classId === classSection.id && 
-      e.staffIds.includes(staffId) &&
+      e.staffIds.some(sid => {
+        const s = findStaffMember(staffList, sid);
+        return s && target && s.id === target.id;
+      }) &&
       !(e.dayOrder === entry.dayOrder && e.period === period)
     );
   };
@@ -181,9 +186,13 @@ export default function SubstitutionDrawer({
   // Helper to get daily workload (own scheduled classes today + substitutions today on this same log sheet)
   // excluding the current slot being configured. Handles standard substitutions and period swaps.
   const getProjectedWorkload = (staffId: string, proposedSubId: string | null, proposedSwapPeriod?: number) => {
+    const target = findStaffMember(staffList, staffId);
     // 1. Master scheduled classes today
     let normalClassesCount = timetableEntries.filter(
-      e => e.dayOrder === entry.dayOrder && e.staffIds.includes(staffId)
+      e => e.dayOrder === entry.dayOrder && e.staffIds.some(sid => {
+        const s = findStaffMember(staffList, sid);
+        return s && target && s.id === target.id;
+      })
     ).length;
 
     // 2. Adjust for periods on currentLogSheet where staffId is absent/replaced
@@ -324,8 +333,8 @@ export default function SubstitutionDrawer({
     const mStaff = mEntry.staffIds.map(id => staffList.find(s => s.id === id)).filter(Boolean) as Staff[];
     return {
       subjectCode: mEntry.subjectCode,
-      staffIds: mEntry.staffIds,
-      effectiveStaffIds: mEntry.staffIds,
+      staffIds: [...mEntry.staffIds],
+      effectiveStaffIds: [...mEntry.staffIds],
       staffCodes: mStaff.map(s => s.code),
       isSwap: false,
       isSub: false,
@@ -349,13 +358,13 @@ export default function SubstitutionDrawer({
     // If user currently selected a substitute in drawer for Period A, use selectedSubId!
     const effectiveStaffIdsA = selectedSubId
       ? [selectedSubId]
-      : (stateA.effectiveStaffIds.length > 0 ? stateA.effectiveStaffIds : (entry.staffIds));
+      : (stateA.effectiveStaffIds.length > 0 ? [...stateA.effectiveStaffIds] : [...entry.staffIds]);
     const effectiveAbsentStaffIdA = absentStaffId || stateA.absentStaffId || entry.staffIds[0] || '';
     const effectiveSubStaffIdA = selectedSubId || stateA.substituteStaffId || (effectiveStaffIdsA[0] ?? null);
 
     // What Period B currently has:
     const subjectB = stateB.subjectCode;
-    const effectiveStaffIdsB = stateB.effectiveStaffIds.length > 0 ? stateB.effectiveStaffIds : (stateB.entry.staffIds);
+    const effectiveStaffIdsB = stateB.effectiveStaffIds.length > 0 ? [...stateB.effectiveStaffIds] : [...stateB.entry.staffIds];
     const effectiveAbsentStaffIdB = stateB.absentStaffId || stateB.entry.staffIds[0] || '';
     const effectiveSubStaffIdB = stateB.substituteStaffId || (effectiveStaffIdsB[0] ?? null);
 
@@ -369,7 +378,7 @@ export default function SubstitutionDrawer({
       isSwap: true,
       swapWithPeriod: targetPeriod,
       swappedSubjectCode: subjectB,
-      swappedStaffIds: effectiveStaffIdsB
+      swappedStaffIds: [...effectiveStaffIdsB]
     };
 
     // Swap: Period B gets Period A's subject and staff (including the assigned substitute!)
@@ -382,7 +391,7 @@ export default function SubstitutionDrawer({
       isSwap: true,
       swapWithPeriod: period,
       swappedSubjectCode: subjectA,
-      swappedStaffIds: effectiveStaffIdsA
+      swappedStaffIds: [...effectiveStaffIdsA]
     };
 
     onConfirm([swapEntryA, swapEntryB]);

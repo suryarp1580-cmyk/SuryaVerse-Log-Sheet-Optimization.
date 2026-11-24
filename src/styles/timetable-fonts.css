@@ -1,0 +1,78 @@
+/* ============================================================================
+   ACCFIN Timetable Generator — Fonts, Print Styles, Transitions (Vite port)
+   ----------------------------------------------------------------------------
+   Import this once in your app entry point (e.g. src/main.tsx):
+     import './styles/timetable-fonts.css';
+   ============================================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Lora:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+
+.font-serif {
+  font-family: 'Lora', ui-serif, serif;
+}
+
+/* Row fade-in when a new subject is added to the Workload Entry table */
+@keyframes timetable-row-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.timetable-row-fade-in {
+  animation: timetable-row-fade-in 300ms ease-out;
+}
+
+@keyframes timetable-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.timetable-fade-in {
+  animation: timetable-fade-in 200ms ease-out;
+}
+
+/* Print styles for the Class Timetable View */
+.print-only-letterhead {
+  display: none;
+}
+
+@media print {
+  @page {
+    size: landscape;
+    margin: 8mm 12mm;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  .timetable-print-area,
+  .timetable-print-area * {
+    visibility: visible;
+  }
+
+  .print-only-letterhead {
+    display: block;
+    visibility: visible;
+    text-align: center;
+    border-bottom: 2px solid #3A0D0D;
+    padding-bottom: 8px;
+    margin-bottom: 12px;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  * {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  table {
+    page-break-inside: avoid;
+  }
+}

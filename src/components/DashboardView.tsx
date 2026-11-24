@@ -6,9 +6,10 @@ interface DashboardViewProps {
   classes: ClassSection[];
   staffList: Staff[];
   timetableEntries: TimetableEntry[];
+  onNewLogSheet?: () => void;
 }
 
-export default function DashboardView({ classes, staffList, timetableEntries }: DashboardViewProps) {
+export default function DashboardView({ classes, staffList, timetableEntries, onNewLogSheet }: DashboardViewProps) {
   const [selectedClassId, setSelectedClassId] = useState<string>(classes[0]?.id || '');
   const [selectedStaffId, setSelectedStaffId] = useState<string>('');
 
@@ -74,13 +75,13 @@ export default function DashboardView({ classes, staffList, timetableEntries }: 
 
       {/* Main Grid: Schedule Viewer */}
       <div className="bg-white border border-[#cbc4cd] rounded-lg shadow-md p-6">
-        <div className="flex justify-between items-center border-b border-[#cbc4cd] pb-4 mb-6">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-[#cbc4cd] pb-4 mb-6 gap-4">
           <div className="flex items-center gap-2">
             <Calendar className="w-5 h-5 text-[#556B2F]" />
             <h3 className="font-serif font-bold text-lg text-[#161b27]">Timetable Master Viewer</h3>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center gap-4">
             {/* Class filter */}
             <div className="flex items-center gap-2">
               <label className="text-xs font-bold text-[#49454d] uppercase tracking-wider">Section:</label>
@@ -100,7 +101,7 @@ export default function DashboardView({ classes, staffList, timetableEntries }: 
               </select>
             </div>
 
-            <span className="text-xs font-bold text-slate-300">|</span>
+            <span className="text-xs font-bold text-slate-300 hidden sm:inline">|</span>
 
             {/* Staff filter */}
             <div className="flex items-center gap-2">

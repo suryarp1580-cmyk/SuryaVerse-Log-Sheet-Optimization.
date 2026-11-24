@@ -1,4 +1,4 @@
-import { Staff, ClassSection, TimetableEntry } from '../types';
+import { Staff, ClassSection, TimetableEntry, LogSheet, Substitution } from '../types';
 
 // ACCFIN 2026-27 ODD SEMESTER - verified against:
 //   AF_CLASS_TIME_TABLE_2026-27_ODD_SEM.pdf (primary)
@@ -22,7 +22,7 @@ export const initialStaff: Staff[] = [
   { id: 'staff-OJ', code: 'OJ', fullName: 'DR. M. OPHELIA JANEFER', isActive: true, onLeave: false },
   { id: 'staff-PM', code: 'PM', fullName: 'DR. P. MARIAPPAN', isActive: true, onLeave: false },
   { id: 'staff-PS', code: 'PS', fullName: 'DR. B. PADMASHREE', isActive: true, onLeave: false },
-  { id: 'staff-RP', code: 'RP', fullName: 'DR. P. RAJENDRA PRASAD (HOD)', isActive: true, onLeave: false },
+  { id: 'staff-RP', code: 'RP', fullName: 'DR. P. RAJENDRA PRASAD', isActive: true, onLeave: false },
   { id: 'staff-RT', code: 'RT', fullName: 'MR. R. THIRUMURUGAN', isActive: true, onLeave: false },
   { id: 'staff-SS', code: 'SS', fullName: 'MS. SHILPA S', isActive: true, onLeave: false },
   { id: 'staff-TP', code: 'TP', fullName: 'MS. T. PARKAVI', isActive: true, onLeave: false }
@@ -42,14 +42,14 @@ export const initialClasses: ClassSection[] = [
   { id: 'class-II-MCOM-AF-A', yearLabel: 'II M.COM AF', section: 'A', roomNo: 'MB S17', inchargeName: 'DR. D. AKILANDESWARI', displayOrder: 11 }
 ];
 
-interface RawPeriod {
+export interface RawPeriod {
   subject: string;
   staffCodes?: string[];
   excluded?: boolean;
   isLab?: boolean;
 }
 
-const rawTimetable: Record<string, Record<number, RawPeriod[]>> = {
+export const rawTimetable: Record<string, Record<number, RawPeriod[]>> = {
   'class-I-BCOM-AF-A': {
     1: [
       { subject: 'POM', staffCodes: ['KM'] },
@@ -492,9 +492,9 @@ const rawTimetable: Record<string, Record<number, RawPeriod[]>> = {
   },
   'class-II-MCOM-AF-A': {
     1: [
+      { subject: 'CAB', staffCodes: ['SS'], isLab: true },
+      { subject: 'CAB', staffCodes: ['SS'], isLab: true },
       { subject: 'ADD', staffCodes: ['DA'] },
-      { subject: 'CAB', staffCodes: ['SS'], isLab: true },
-      { subject: 'CAB', staffCodes: ['SS'], isLab: true },
       { subject: 'TPM', staffCodes: ['RT'] },
       { subject: 'ACM', staffCodes: ['GS'] }
     ],
@@ -557,15 +557,16 @@ export const getInitialTimetableEntries = (): TimetableEntry[] => {
 
         const isLab = !!rawPeriod.isLab || rawPeriod.subject.toUpperCase().includes('LAB');
 
+        // Fully independent record for every period slot: (classId, dayOrder, period)
         entries.push({
           id: `entry-${classId}-${dayOrder}-${period}`,
-          classId,
-          dayOrder,
-          period,
-          subjectCode: rawPeriod.subject,
-          isLab,
-          excludedFromSubstitution: !!rawPeriod.excluded,
-          staffIds
+          classId: String(classId),
+          dayOrder: Number(dayOrder),
+          period: Number(period),
+          subjectCode: String(rawPeriod.subject),
+          isLab: Boolean(isLab),
+          excludedFromSubstitution: Boolean(rawPeriod.excluded),
+          staffIds: [...staffIds]
         });
       });
     }
@@ -573,3 +574,99 @@ export const getInitialTimetableEntries = (): TimetableEntry[] => {
 
   return entries;
 };
+
+export const getInitialLogSheets = (): LogSheet[] => [
+  {
+    id: 'a1111111-1111-4111-8111-111111111101',
+    logDate: '2026-09-14',
+    dayOrder: 1,
+    status: 'draft',
+    totalAbsentees: 2,
+    totalSubstitutions: 3,
+  },
+  {
+    id: 'a1111111-1111-4111-8111-111111111102',
+    logDate: '2026-09-11',
+    dayOrder: 6,
+    status: 'finalized',
+    finalizedAt: '2026-09-11T16:30:00.000Z',
+    totalAbsentees: 2,
+    totalSubstitutions: 4,
+  },
+  {
+    id: 'a1111111-1111-4111-8111-111111111103',
+    logDate: '2026-09-10',
+    dayOrder: 5,
+    status: 'finalized',
+    finalizedAt: '2026-09-10T16:30:00.000Z',
+    totalAbsentees: 1,
+    totalSubstitutions: 2,
+  },
+  {
+    id: 'a1111111-1111-4111-8111-111111111104',
+    logDate: '2026-09-09',
+    dayOrder: 4,
+    status: 'finalized',
+    finalizedAt: '2026-09-09T16:30:00.000Z',
+    totalAbsentees: 3,
+    totalSubstitutions: 5,
+  },
+  {
+    id: 'a1111111-1111-4111-8111-111111111105',
+    logDate: '2026-09-08',
+    dayOrder: 3,
+    status: 'finalized',
+    finalizedAt: '2026-09-08T16:30:00.000Z',
+    totalAbsentees: 1,
+    totalSubstitutions: 2,
+  },
+  {
+    id: 'a1111111-1111-4111-8111-111111111106',
+    logDate: '2026-09-07',
+    dayOrder: 2,
+    status: 'finalized',
+    finalizedAt: '2026-09-07T16:30:00.000Z',
+    totalAbsentees: 2,
+    totalSubstitutions: 3,
+  }
+];
+
+export const getInitialSubstitutions = (): Substitution[] => [
+  {
+    id: 'b1111111-1111-4111-8111-111111111101',
+    logSheetId: 'a1111111-1111-4111-8111-111111111101',
+    classId: 'class-I-BCOM-AF-A',
+    period: 1,
+    absentStaffId: 'staff-KM',
+    substituteStaffId: 'staff-TP',
+    remarks: 'Medical Leave - Handled by TP',
+  },
+  {
+    id: 'b1111111-1111-4111-8111-111111111102',
+    logSheetId: 'a1111111-1111-4111-8111-111111111101',
+    classId: 'class-II-BCOM-AF-B',
+    period: 2,
+    absentStaffId: 'staff-DJ',
+    substituteStaffId: 'staff-GS',
+    remarks: 'On Duty - Academic Council',
+  },
+  {
+    id: 'b1111111-1111-4111-8111-111111111103',
+    logSheetId: 'a1111111-1111-4111-8111-111111111102',
+    classId: 'class-III-BCOM-AF-A',
+    period: 4,
+    absentStaffId: 'staff-TP',
+    substituteStaffId: 'staff-JP',
+    remarks: 'Internal Audit Duty',
+  },
+  {
+    id: 'b1111111-1111-4111-8111-111111111104',
+    logSheetId: 'a1111111-1111-4111-8111-111111111103',
+    classId: 'class-I-MCOM-AF-A',
+    period: 3,
+    absentStaffId: 'staff-MP',
+    substituteStaffId: 'staff-FND',
+    remarks: 'Pre-approved Personal Leave',
+  }
+];
+

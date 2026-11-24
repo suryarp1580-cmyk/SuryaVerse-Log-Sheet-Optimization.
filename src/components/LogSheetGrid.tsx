@@ -1,5 +1,7 @@
 import React from 'react';
 import { ClassSection, Staff, TimetableEntry, Substitution } from '../types';
+import { findStaffMember } from '../lib/staffUtils';
+import { rawTimetable } from '../data/seedData';
 
 interface LogSheetGridProps {
   classes: ClassSection[];
@@ -8,6 +10,7 @@ interface LogSheetGridProps {
   substitutions: Substitution[];
   isFinalized: boolean;
   activeDayOrder: number;
+  logSheetId?: string;
   onCellClick: (classId: string, period: number, entry: TimetableEntry) => void;
 }
 
@@ -18,6 +21,7 @@ export default function LogSheetGrid({
   substitutions,
   isFinalized,
   activeDayOrder,
+  logSheetId,
   onCellClick
 }: LogSheetGridProps) {
   // Sort classes by display order
@@ -43,10 +47,23 @@ export default function LogSheetGrid({
 
     const { subjectCode, excludedFromSubstitution, isLab, staffIds } = entry;
 
-    // Get staff objects
-    const originalStaff = staffIds
-      .map(id => staffList.find(s => s.id === id))
+    // Get staff objects using resilient resolver
+    let originalStaff = (staffIds || [])
+      .map(id => findStaffMember(staffList, id))
       .filter((s): s is Staff => !!s);
+
+    // If staffIds was unpopulated or unlinked for a departmental subject, fallback to raw timetable mapping
+    if (originalStaff.length === 0 && !excludedFromSubstitution) {
+      const fallbackPeriod = rawTimetable[classSection.id]?.[activeDayOrder]?.[period - 1];
+      if (fallbackPeriod?.staffCodes) {
+        fallbackPeriod.staffCodes.forEach(code => {
+          const s = findStaffMember(staffList, code);
+          if (s && !originalStaff.some(existing => existing.id === s.id)) {
+            originalStaff.push(s);
+          }
+        });
+      }
+    }
 
     if (excludedFromSubstitution) {
       return (
@@ -54,14 +71,17 @@ export default function LogSheetGrid({
           key={`${classSection.id}-${period}`}
           className="log-sheet-grid-cell border-r border-[#cbc4cd] bg-blue-50/40 text-blue-700 italic text-center font-semibold text-xs p-4 h-20 select-none"
         >
-          {subjectCode}
+          <div className="flex flex-col items-center justify-center h-full">
+            <span className="font-bold text-blue-800 tracking-wide not-italic">{subjectCode}</span>
+            <span className="text-[9px] not-italic text-blue-500 font-medium tracking-normal mt-0.5">(Non-Dept)</span>
+          </div>
         </td>
       );
     }
 
     // Find if there is an active substitution for this class/period
     const activeSub = substitutions.find(
-      s => s.classId === classSection.id && s.period === period
+      s => (logSheetId ? s.logSheetId === logSheetId : true) && s.classId === classSection.id && s.period === period
     );
 
     const isClickable = !isFinalized;
@@ -71,7 +91,7 @@ export default function LogSheetGrid({
       return (
         <td
           key={`${classSection.id}-${period}`}
-          onClick={() => isClickable && onCellClick(classSection.id, period, entry)}
+          onClick={() => isClickable && onCellClick(classSection.id, period, { ...entry, staffIds: [...entry.staffIds] })}
           className={`log-sheet-grid-cell border-r border-[#cbc4cd] p-4 bg-white h-20 ${
             isClickable
               ? 'cursor-pointer hover:bg-slate-50'
@@ -86,7 +106,7 @@ export default function LogSheetGrid({
     return (
       <td
         key={`${classSection.id}-${period}`}
-        onClick={() => isClickable && onCellClick(classSection.id, period, entry)}
+        onClick={() => isClickable && onCellClick(classSection.id, period, { ...entry, staffIds: [...entry.staffIds] })}
         className={`log-sheet-grid-cell border-r border-[#cbc4cd] text-center p-4 transition-colors h-20 ${
           activeSub
             ? activeSub.isSwap
@@ -103,8 +123,13 @@ export default function LogSheetGrid({
       >
         <div className="font-sans text-xs flex flex-col justify-center h-full">
           {/* Subject Header */}
-          <div className="font-bold text-[#161b27] uppercase tracking-wide">
-            {activeSub && activeSub.isSwap ? activeSub.swappedSubjectCode : subjectCode}
+          <div className="font-bold text-[#161b27] uppercase tracking-wide flex items-center justify-center gap-1">
+            <span>{activeSub && activeSub.isSwap ? activeSub.swappedSubjectCode : subjectCode}</span>
+            {isLab && (
+              <span className="text-[9px] font-extrabold px-1 py-0.2 rounded bg-emerald-100 text-[#374e00] border border-[#556B2F]/20">
+                LAB
+              </span>
+            )}
           </div>
 
           {/* Staff list rendering */}
@@ -113,7 +138,7 @@ export default function LogSheetGrid({
               <div className="mt-1 flex flex-col items-center justify-center gap-0.5">
                 <div className="flex flex-wrap items-center justify-center gap-1 text-[11px] text-[#161b27] font-bold">
                   {(activeSub.swappedStaffIds || (activeSub.substituteStaffId ? [activeSub.substituteStaffId] : [])).map(
-                    id => staffList.find(s => s.id === id)?.code || '?'
+                    id => findStaffMember(staffList, id)?.code || '?'
                   ).join(', ') || 'FREE'}
                 </div>
                 <div className="flex items-center gap-1 mt-0.5">
@@ -132,7 +157,7 @@ export default function LogSheetGrid({
                 {/* Render original staff, striking through the absent one */}
                 <div className="flex flex-wrap items-center justify-center gap-1 text-[10px] text-slate-400 font-medium">
                   {originalStaff.map((s, i) => {
-                    const isAbsent = s.id === activeSub.absentStaffId;
+                    const isAbsent = s.id === activeSub.absentStaffId || s.code === activeSub.absentStaffId;
                     return (
                       <span
                         key={s.id}
@@ -148,7 +173,7 @@ export default function LogSheetGrid({
                 {/* Render substitute staff */}
                 {activeSub.substituteStaffId ? (
                   <div className="mt-0.5 inline-flex items-center px-1.5 py-0.5 rounded-xs bg-[#cbeb8a] text-[#374e00] text-[10px] font-extrabold shadow-2xs border border-[#516b19]/10">
-                    SUB: {staffList.find(s => s.id === activeSub.substituteStaffId)?.code || '?'}
+                    SUB: {findStaffMember(staffList, activeSub.substituteStaffId)?.code || '?'}
                   </div>
                 ) : (
                   <div className="mt-0.5 inline-flex items-center px-1.5 py-0.5 rounded-xs bg-red-100 text-red-800 text-[10px] font-bold">
@@ -170,9 +195,9 @@ export default function LogSheetGrid({
   };
 
   return (
-    <div className="log-sheet-table-wrapper w-full bg-white border border-[#cbc4cd] shadow-md overflow-hidden rounded-md">
+    <div className="log-sheet-table-wrapper w-full bg-white border border-[#cbc4cd] shadow-md overflow-hidden print:overflow-visible rounded-md">
       {/* Dense Grid Table */}
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto print:overflow-visible">
         <table className="log-sheet-table w-full border-collapse text-left min-w-[950px]">
           <thead>
             <tr className="bg-[#556B2F] text-white select-none">
@@ -215,7 +240,19 @@ export default function LogSheetGrid({
           </thead>
           
           <tbody className="divide-y divide-[#cbc4cd]">
-            {sortedClasses.map(cls => (
+            {sortedClasses.length === 0 ? (
+              <tr>
+                <td colSpan={10} className="text-center py-16 px-4 bg-white text-slate-500 font-sans">
+                  <div className="flex flex-col items-center justify-center gap-2 max-w-md mx-auto">
+                    <p className="font-serif font-bold text-base text-slate-700">No Academic Classes Found</p>
+                    <p className="text-xs text-slate-500">
+                      All database records have been deleted. You can restore all past classes, timetable periods, and staff anytime by opening <strong>Data Management</strong> and clicking <strong>Seed Database</strong>.
+                    </p>
+                  </div>
+                </td>
+              </tr>
+            ) : (
+              sortedClasses.map(cls => (
               <tr
                 key={cls.id}
                 className="hover:bg-slate-50 transition-colors h-20"
@@ -255,13 +292,13 @@ export default function LogSheetGrid({
                   </div>
                 </td>
               </tr>
-            ))}
+            )))}
           </tbody>
         </table>
       </div>
 
       {/* Daily Substitution & Adjustment Log Table (Included in PDF & Print) */}
-      <div className="substitution-summary-section mt-6 border-t border-[#cbc4cd] pt-5 px-6">
+      <div className="substitution-summary-section mt-6 border-t border-[#cbc4cd] pt-5 px-6 overflow-visible print:overflow-visible">
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
             <h3 className="font-serif font-bold text-xs md:text-sm text-[#203978] uppercase tracking-wide print:text-[11px]">
@@ -274,7 +311,7 @@ export default function LogSheetGrid({
         </div>
 
         {substitutions.length > 0 ? (
-          <div className="overflow-x-auto border border-[#cbc4cd] rounded-sm">
+          <div className="overflow-x-auto border border-[#cbc4cd] rounded-sm print:overflow-visible">
             <table className="w-full border-collapse text-left text-xs print:text-[9px]">
               <thead>
                 <tr className="bg-[#203978] text-white select-none">
@@ -291,9 +328,9 @@ export default function LogSheetGrid({
                 {substitutions.map((sub, index) => {
                   const classInfo = classes.find(c => c.id === sub.classId);
                   const classLabel = classInfo ? `${classInfo.yearLabel} (${classInfo.section})` : '—';
-                  const absentStaff = staffList.find(s => s.id === sub.absentStaffId);
+                  const absentStaff = findStaffMember(staffList, sub.absentStaffId);
                   const absentLabel = absentStaff ? `${absentStaff.code} - ${absentStaff.fullName || 'Faculty'}` : '—';
-                  const subStaff = sub.substituteStaffId ? staffList.find(s => s.id === sub.substituteStaffId) : null;
+                  const subStaff = sub.substituteStaffId ? findStaffMember(staffList, sub.substituteStaffId) : null;
                   
                   const ttEntry = timetableEntries.find(
                     e => e.classId === sub.classId && e.dayOrder === activeDayOrder && e.period === sub.period
@@ -303,7 +340,7 @@ export default function LogSheetGrid({
                   let substituteLabel = '—';
                   if (sub.isSwap) {
                     const swappedStaffNames = (sub.swappedStaffIds || [])
-                      .map(id => staffList.find(s => s.id === id)?.code || '?')
+                      .map(id => findStaffMember(staffList, id)?.code || '?')
                       .join(', ');
                     substituteLabel = `Period Swap (P${sub.swapWithPeriod}: ${swappedStaffNames || 'Swapped'})`;
                   } else if (subStaff) {
