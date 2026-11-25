@@ -722,21 +722,27 @@ export default function WorkloadEntryForm({
 
                   <div>
                     <input
+                      id={`faculty-input-${currentGroup.id}-${sec.sectionName}`}
+                      name={`faculty-input-${currentGroup.id}-${sec.sectionName}`}
                       type="text"
+                      autoComplete="off"
                       placeholder="e.g. MJ or MJ(4)/MP(1)"
                       className={`${inputClass} uppercase font-mono text-xs`}
                       value={inputVal}
-                      onChange={(e) =>
+                      onChange={(e) => {
+                        const val = e.target.value;
                         setSectionStaffInput((prev) => ({
                           ...prev,
-                          [sec.sectionName]: e.target.value,
-                        }))
-                      }
+                          [sec.sectionName]: val,
+                        }));
+                      }}
                     />
 
                     {/* Quick Staff Dropdown Helper */}
                     <div className="mt-1.5">
                       <select
+                        id={`faculty-pick-${currentGroup.id}-${sec.sectionName}`}
+                        name={`faculty-pick-${currentGroup.id}-${sec.sectionName}`}
                         className="text-[11px] bg-[#FAF7F1] border border-[#E4DCC9] rounded px-2 py-1 text-[#4A4038] w-full focus:outline-hidden"
                         value=""
                         onChange={(e) => {

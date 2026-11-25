@@ -300,15 +300,17 @@ export function parseStaffSplitNotation(
     return { splits: [], error: 'Staff assignment cannot be empty.' };
   }
 
-  // Helper to find a staff member by code, id, or name
+  // Helper to find a staff member strictly by exact code, id, or exact full name
+  // (Prioritized passes across the entire roster so an earlier name containing
+  // the typed code as a substring, e.g. "KS" inside "JAYALAKSHMI", can never shadow "KS".)
   const findStaff = (query: string): TTStaff | undefined => {
     const q = query.trim().toUpperCase();
-    return allStaff.find(
-      (s) =>
-        s.short_code.toUpperCase() === q ||
-        s.id.toUpperCase() === q ||
-        s.full_name.toUpperCase() === q ||
-        s.full_name.toUpperCase().includes(q)
+    if (!q) return undefined;
+
+    return (
+      allStaff.find((s) => s.short_code.trim().toUpperCase() === q) ??
+      allStaff.find((s) => s.id.trim().toUpperCase() === q) ??
+      allStaff.find((s) => s.full_name.trim().toUpperCase() === q)
     );
   };
 

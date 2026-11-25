@@ -21,21 +21,17 @@ export function findStaffMember(staffList: Staff[], idOrCode: string | undefined
   const upper = raw.toUpperCase();
   const withoutStaffPrefix = upper.startsWith('STAFF-') ? upper.replace('STAFF-', '') : upper;
 
-  return staffList.find(s => {
-    if (!s) return false;
-    const sId = String(s.id || '').trim();
-    const sCode = String(s.code || '').trim().toUpperCase();
-    const sFull = String(s.fullName || '').trim().toUpperCase();
-
-    return (
-      sId === raw ||
-      sId.toUpperCase() === upper ||
-      sCode === upper ||
-      sCode === withoutStaffPrefix ||
-      sId.toUpperCase() === `STAFF-${withoutStaffPrefix}` ||
-      (sFull && (sFull === upper || sFull.includes(upper)))
-    );
-  });
+  return (
+    staffList.find(s => s && String(s.id || '').trim() === raw) ??
+    staffList.find(s => s && String(s.id || '').trim().toUpperCase() === upper) ??
+    staffList.find(s => s && String(s.code || '').trim().toUpperCase() === upper) ??
+    staffList.find(s => s && String(s.code || '').trim().toUpperCase() === withoutStaffPrefix) ??
+    staffList.find(s => s && String(s.id || '').trim().toUpperCase() === `STAFF-${withoutStaffPrefix}`) ??
+    staffList.find(s => s && String(s.fullName || '').trim().toUpperCase() === upper) ??
+    (upper.length >= 4
+      ? staffList.find(s => s && String(s.fullName || '').trim().toUpperCase().includes(upper))
+      : undefined)
+  );
 }
 
 /**
@@ -49,21 +45,17 @@ export function findTTStaff(allStaff: TTStaff[], idOrCode: string | undefined | 
   const upper = raw.toUpperCase();
   const withoutStaffPrefix = upper.startsWith('STAFF-') ? upper.replace('STAFF-', '') : upper;
 
-  return allStaff.find(s => {
-    if (!s) return false;
-    const sId = String(s.id || '').trim();
-    const sCode = String(s.short_code || '').trim().toUpperCase();
-    const sFull = String(s.full_name || '').trim().toUpperCase();
-
-    return (
-      sId === raw ||
-      sId.toUpperCase() === upper ||
-      sCode === upper ||
-      sCode === withoutStaffPrefix ||
-      sId.toUpperCase() === `STAFF-${withoutStaffPrefix}` ||
-      (sFull && (sFull === upper || sFull.includes(upper)))
-    );
-  });
+  return (
+    allStaff.find(s => s && String(s.id || '').trim() === raw) ??
+    allStaff.find(s => s && String(s.id || '').trim().toUpperCase() === upper) ??
+    allStaff.find(s => s && String(s.short_code || '').trim().toUpperCase() === upper) ??
+    allStaff.find(s => s && String(s.short_code || '').trim().toUpperCase() === withoutStaffPrefix) ??
+    allStaff.find(s => s && String(s.id || '').trim().toUpperCase() === `STAFF-${withoutStaffPrefix}`) ??
+    allStaff.find(s => s && String(s.full_name || '').trim().toUpperCase() === upper) ??
+    (upper.length >= 4
+      ? allStaff.find(s => s && String(s.full_name || '').trim().toUpperCase().includes(upper))
+      : undefined)
+  );
 }
 
 export interface ResolvedStaffAssignment {
