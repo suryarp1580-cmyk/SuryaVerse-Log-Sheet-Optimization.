@@ -344,8 +344,9 @@ export async function fetchAllAppData(options?: { forceRemoteSync?: boolean }): 
         });
 
         // If a departmental entry has missing or unresolved staffIds, re-derive from baseline timetable
+        // (Skip fallback for Step 0 LAB entries so explicitly unstaffed LAB blocks stay empty)
         const hasValidStaff = resolvedStaffIds.some(id => !!findStaffMember(staffList, id));
-        if ((resolvedStaffIds.length === 0 || !hasValidStaff) && !entry.excludedFromSubstitution) {
+        if ((resolvedStaffIds.length === 0 || !hasValidStaff) && !entry.excludedFromSubstitution && entry.subjectCode?.trim().toUpperCase() !== 'LAB') {
           const fallback = rawTimetable[entry.classId]?.[entry.dayOrder]?.[entry.period - 1];
           if (fallback?.staffCodes) {
             resolvedStaffIds = fallback.staffCodes

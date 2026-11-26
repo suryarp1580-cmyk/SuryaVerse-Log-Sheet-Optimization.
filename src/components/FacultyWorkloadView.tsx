@@ -116,7 +116,8 @@ export default function FacultyWorkloadView({
           sheet.dayOrder,
           timetableEntries,
           substitutions,
-          sheet.id
+          sheet.id,
+          staff.code
         );
         regularPeriods += sheetLoad.regularPeriods;
         substitutionPeriods += sheetLoad.substitutionPeriods;

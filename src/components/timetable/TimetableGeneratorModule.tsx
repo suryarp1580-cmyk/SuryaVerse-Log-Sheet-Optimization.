@@ -273,7 +273,7 @@ export default function TimetableGeneratorModule({ liveStaffList }: Props) {
 
         const effectiveClasses = classList.length > 0 ? classList : DEFAULT_ACCFIN_CLASSES;
         const effectiveStaff = staffList.length > 0 ? staffList : DEFAULT_ACCFIN_STAFF;
-        const fixedMap = await getAllFixedPeriods(effectiveClasses, allWorkload);
+        const fixedMap = await getAllFixedPeriods(effectiveClasses, allWorkload, effectiveStaff);
         if (cancelled) return;
 
         setClasses(effectiveClasses);
@@ -324,7 +324,7 @@ export default function TimetableGeneratorModule({ liveStaffList }: Props) {
 
   const handleUseOfflineDefaults = async () => {
     const offlineWorkload = loadWorkloadMemory();
-    const fixedMap = await getAllFixedPeriods(DEFAULT_ACCFIN_CLASSES, offlineWorkload);
+    const fixedMap = await getAllFixedPeriods(DEFAULT_ACCFIN_CLASSES, offlineWorkload, DEFAULT_ACCFIN_STAFF);
     setClasses(DEFAULT_ACCFIN_CLASSES);
     setStaff(DEFAULT_ACCFIN_STAFF);
     setWorkloadByClass(offlineWorkload);

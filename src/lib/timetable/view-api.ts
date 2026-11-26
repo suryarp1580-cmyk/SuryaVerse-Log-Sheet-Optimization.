@@ -8,18 +8,63 @@ import { supabase, getActiveSupabaseUrl, getActiveSupabaseAnonKey } from '../sup
 import type { ClassTimetableData, StaffTimetableData, GridCell, GridCellMap } from './grid-types';
 import { slotKey } from './grid-types';
 import type { FixedPeriodsByClass, FormActionResult, TTClass, TTFixedPeriodSlot, TTStaff, TTWorkload } from './types';
-import { getFixedSlotsForClass } from './fixed-periods-api';
 import {
+  getFixedSlotsForClass,
+  mergeLabBlockStaffInSlots,
+  parseFixedSlotStaffIds,
+  resolveActiveClassId,
+} from './fixed-periods-api';
+import {
+  isFixedPeriodsInitialized,
   loadFixedPeriodsMemory,
   loadGeneratedSlotsMemory,
   loadTTStaffMemory,
   loadWorkloadMemory,
 } from '../memoryStorage';
+import { findTTStaff } from '../staffUtils';
+import { initialClasses, initialStaff } from '../../data/seedData';
 
 function fixedTypeLabel(slotType: string): string {
   if (slotType === 'LANG') return 'Language (Fixed)';
   if (slotType === 'ENG') return 'English (Fixed)';
   return 'Lab / Practical (Fixed)';
+}
+
+function getFallbackTTClasses(): TTClass[] {
+  return initialClasses.map((c, i) => ({
+    id: c.id,
+    code: c.id.replace('class-', ''),
+    display_name: `${c.yearLabel} - ${c.section}`,
+    sort_order: i + 1,
+  }));
+}
+
+function getFallbackTTStaff(): TTStaff[] {
+  const mem = loadTTStaffMemory() as TTStaff[];
+  if (mem.length > 0) return mem;
+  return initialStaff.map((s) => ({
+    id: s.id,
+    short_code: s.code,
+    full_name: s.fullName || s.code,
+    status: s.isActive ? 'ACTIVE' : 'INACTIVE',
+    is_hod: false,
+  }));
+}
+
+function resolveStaffMatchSet(staffId: string, staffList: TTStaff[], staffShortCode?: string): Set<string> {
+  const matched = findTTStaff(staffList, staffId);
+  const set = new Set<string>();
+  const add = (val: string | undefined | null) => {
+    const t = (val || '').trim().toUpperCase();
+    if (!t) return;
+    set.add(t);
+    set.add(t.startsWith('STAFF-') ? t.slice(6) : `STAFF-${t}`);
+  };
+  add(staffId);
+  add(staffShortCode);
+  add(matched?.id);
+  add(matched?.short_code);
+  return set;
 }
 
 function mergeStep0FixedCellsAndLegend(
@@ -28,48 +73,86 @@ function mergeStep0FixedCellsAndLegend(
   classDisplayName: string,
   cells: GridCellMap,
   legend: ClassTimetableData['legend'],
-  fixedSlots: TTFixedPeriodSlot[]
+  fixedSlots: TTFixedPeriodSlot[],
+  staffList: TTStaff[] = []
 ) {
+  const mergedSlots = mergeLabBlockStaffInSlots(fixedSlots, staffList).slots;
   const counts: Record<string, number> = {};
-  for (const fs of fixedSlots) {
+  const staffLabelsByType: Record<string, Set<string>> = {};
+
+  for (const fs of mergedSlots) {
     const key = slotKey(fs.day_order, fs.period);
+    const parsedIds = parseFixedSlotStaffIds(fs, staffList);
+    const resolvedStaff = parsedIds
+      .map((id) => findTTStaff(staffList, id))
+      .filter((s): s is TTStaff => Boolean(s));
+    const staffCodes = parsedIds
+      .map((id, idx) => resolvedStaff[idx]?.short_code || id.replace(/^staff-/i, ''))
+      .filter(Boolean);
+    const staffNames = resolvedStaff.map((s) => s.full_name).filter(Boolean);
+
+    const staffShortCode = staffCodes.length > 0 ? staffCodes.join('/') : 'FIXED';
+    const staffName = staffNames.length > 0 ? staffNames.join(', ') : 'Step 0 Fixed Period';
+
     if (!cells[key]) {
       cells[key] = {
         slotId: `fixed-step0-${classId}-${fs.day_order}-${fs.period}`,
         workloadId: '',
         subjectCode: fs.slot_type,
         subjectName: fixedTypeLabel(fs.slot_type),
-        staffShortCode: 'FIXED',
-        staffName: 'Step 0 Fixed Period',
+        staffShortCode,
+        staffName,
         classCode,
         classDisplayName,
         isFixed: true,
         isClash: false,
         clashReason: null,
       };
+    } else if (cells[key].isFixed && staffCodes.length > 0 && (cells[key].staffShortCode === 'FIXED' || !cells[key].staffShortCode)) {
+      cells[key] = {
+        ...cells[key],
+        staffShortCode,
+        staffName,
+      };
     }
+
     counts[fs.slot_type] = (counts[fs.slot_type] ?? 0) + 1;
+    if (!staffLabelsByType[fs.slot_type]) staffLabelsByType[fs.slot_type] = new Set<string>();
+    for (const code of staffCodes) {
+      staffLabelsByType[fs.slot_type].add(code);
+    }
   }
 
   for (const [stype, hrs] of Object.entries(counts)) {
     const alreadyInLegend = legend.some((l) => l.subjectCode.toUpperCase() === stype);
     if (!alreadyInLegend) {
+      const assigned = staffLabelsByType[stype];
       legend.push({
         subjectCode: stype,
         subjectName: fixedTypeLabel(stype),
         hoursPerWeek: hrs,
-        staffName: 'College Fixed (Step 0)',
+        staffName:
+          assigned && assigned.size > 0
+            ? Array.from(assigned).join(', ')
+            : 'College Fixed (Step 0)',
       });
     }
   }
 }
 
-async function fetchFixedPeriodsForClass(classId: string, classCode?: string): Promise<TTFixedPeriodSlot[]> {
+async function fetchFixedPeriodsForClass(
+  classId: string,
+  classCode?: string,
+  staffList: TTStaff[] = []
+): Promise<TTFixedPeriodSlot[]> {
   const memFixed = loadFixedPeriodsMemory() as FixedPeriodsByClass;
   const mockClasses: TTClass[] = classCode
     ? [{ id: classId, code: classCode, display_name: classCode, sort_order: 0 }]
     : [];
-  const localSlots = getFixedSlotsForClass(memFixed, classId, mockClasses);
+  const localSlots = mergeLabBlockStaffInSlots(
+    getFixedSlotsForClass(memFixed, classId, mockClasses),
+    staffList
+  ).slots;
 
   try {
     const { data, error } = await supabase
@@ -77,12 +160,139 @@ async function fetchFixedPeriodsForClass(classId: string, classCode?: string): P
       .select('*')
       .eq('class_id', classId);
     if (!error && Array.isArray(data) && data.length > 0) {
-      return data as TTFixedPeriodSlot[];
+      return mergeLabBlockStaffInSlots(data as TTFixedPeriodSlot[], staffList).slots;
     }
   } catch {
     // Silent fallback to local memory
   }
   return localSlots;
+}
+
+async function fetchAllFixedPeriodsForView(
+  classes: TTClass[],
+  staffList: TTStaff[]
+): Promise<FixedPeriodsByClass> {
+  const memFixed = loadFixedPeriodsMemory() as FixedPeriodsByClass;
+  const localInitialized = isFixedPeriodsInitialized();
+  const hasLocal =
+    localInitialized &&
+    Object.values(memFixed || {}).some((arr) => Array.isArray(arr) && arr.length > 0);
+
+  if (hasLocal) {
+    const out: FixedPeriodsByClass = {};
+    for (const [cid, arr] of Object.entries(memFixed)) {
+      const activeCid = resolveActiveClassId(cid, classes);
+      out[activeCid] = mergeLabBlockStaffInSlots(arr ?? [], staffList).slots;
+    }
+    return out;
+  }
+
+  try {
+    const { data, error } = await supabase.from('tt_fixed_periods').select('*');
+    if (!error && Array.isArray(data) && data.length > 0) {
+      const out: FixedPeriodsByClass = {};
+      for (const row of data as TTFixedPeriodSlot[]) {
+        const activeCid = resolveActiveClassId(row.class_id, classes);
+        if (!out[activeCid]) out[activeCid] = [];
+        out[activeCid].push(row);
+      }
+      for (const cid of Object.keys(out)) {
+        out[cid] = mergeLabBlockStaffInSlots(out[cid], staffList).slots;
+      }
+      return out;
+    }
+  } catch {
+    // Fallback to memory
+  }
+
+  const out: FixedPeriodsByClass = {};
+  for (const [cid, arr] of Object.entries(memFixed || {})) {
+    const activeCid = resolveActiveClassId(cid, classes);
+    out[activeCid] = mergeLabBlockStaffInSlots(arr ?? [], staffList).slots;
+  }
+  return out;
+}
+
+function mergeStep0StaffSlotsAndLegend(
+  staffId: string,
+  staffShortCode: string,
+  staffName: string,
+  fixedByClass: FixedPeriodsByClass,
+  classes: TTClass[],
+  staffList: TTStaff[],
+  cells: GridCellMap,
+  legend: StaffTimetableData['legend']
+): number {
+  const targetTokens = resolveStaffMatchSet(staffId, staffList, staffShortCode);
+  let addedHours = 0;
+
+  const groupedByClassType = new Map<
+    string,
+    { classDisplayName: string; subjectCode: string; subjectName: string; hoursPerWeek: number }
+  >();
+
+  for (const cls of classes) {
+    const fixedSlots = mergeLabBlockStaffInSlots(
+      getFixedSlotsForClass(fixedByClass, cls.id, classes),
+      staffList
+    ).slots;
+
+    for (const fs of fixedSlots) {
+      const parsedIds = parseFixedSlotStaffIds(fs, staffList);
+      const isAssigned = parsedIds.some((id) => {
+        const resolved = findTTStaff(staffList, id);
+        return (
+          targetTokens.has(id.trim().toUpperCase()) ||
+          (resolved ? targetTokens.has(resolved.short_code.trim().toUpperCase()) : false)
+        );
+      });
+      if (!isAssigned) continue;
+
+      const key = slotKey(fs.day_order, fs.period);
+      if (!cells[key]) {
+        cells[key] = {
+          slotId: fs.id || `fixed-step0-${cls.id}-${fs.day_order}-${fs.period}`,
+          workloadId: '',
+          subjectCode: fs.slot_type,
+          subjectName: fixedTypeLabel(fs.slot_type),
+          staffShortCode,
+          staffName,
+          classCode: cls.code,
+          classDisplayName: cls.display_name,
+          isFixed: true,
+          isClash: false,
+          clashReason: null,
+        };
+        addedHours += 1;
+      }
+
+      const gKey = `${cls.display_name}::${fs.slot_type}`;
+      const prev = groupedByClassType.get(gKey);
+      if (prev) {
+        prev.hoursPerWeek += 1;
+      } else {
+        groupedByClassType.set(gKey, {
+          classDisplayName: cls.display_name,
+          subjectCode: fs.slot_type,
+          subjectName: fixedTypeLabel(fs.slot_type),
+          hoursPerWeek: 1,
+        });
+      }
+    }
+  }
+
+  for (const item of groupedByClassType.values()) {
+    const alreadyExists = legend.some(
+      (l) =>
+        l.classDisplayName === item.classDisplayName &&
+        l.subjectCode.trim().toUpperCase() === item.subjectCode.trim().toUpperCase()
+    );
+    if (!alreadyExists) {
+      legend.push(item);
+    }
+  }
+
+  return addedHours;
 }
 
 export async function getClassList(): Promise<TTClass[]> {
@@ -109,10 +319,11 @@ export async function getClassTimetable(classId: string, forceLive = false): Pro
           'Cache-Control': 'no-cache, no-store, must-revalidate',
           Pragma: 'no-cache',
         };
-        const [classRes, workloadRes, slotsRes] = await Promise.all([
+        const [classRes, workloadRes, slotsRes, staffRes] = await Promise.all([
           fetch(`${url}/rest/v1/tt_classes?id=eq.${classId}&select=*&_ts=${Date.now()}`, { headers }),
           fetch(`${url}/rest/v1/tt_workload?class_id=eq.${classId}&select=*,staff:tt_staff(*)&_ts=${Date.now()}`, { headers }),
           fetch(`${url}/rest/v1/tt_slots?class_id=eq.${classId}&select=*,workload:tt_workload(*,staff:tt_staff(*))&_ts=${Date.now()}`, { headers }),
+          fetch(`${url}/rest/v1/tt_staff?select=*&_ts=${Date.now()}`, { headers }),
         ]);
 
         if (classRes.ok && workloadRes.ok && slotsRes.ok) {
@@ -121,6 +332,9 @@ export async function getClassTimetable(classId: string, forceLive = false): Pro
           if (classRow) {
             const workload = await workloadRes.json();
             const slots = await slotsRes.json();
+            const staffList: TTStaff[] = staffRes.ok
+              ? ((await staffRes.json()) as TTStaff[])
+              : getFallbackTTStaff();
 
             const cells: GridCellMap = {};
             const placedHoursByWorkload = new Map<string, number>();
@@ -168,8 +382,16 @@ export async function getClassTimetable(classId: string, forceLive = false): Pro
               staffName: w.staff?.full_name ?? 'Unknown',
             }));
 
-            const fixedSlots = await fetchFixedPeriodsForClass(classId, classRow.code);
-            mergeStep0FixedCellsAndLegend(classId, classRow.code, classRow.display_name, cells, legend, fixedSlots);
+            const fixedSlots = await fetchFixedPeriodsForClass(classId, classRow.code, staffList);
+            mergeStep0FixedCellsAndLegend(
+              classId,
+              classRow.code,
+              classRow.display_name,
+              cells,
+              legend,
+              fixedSlots,
+              staffList
+            );
 
             return { classId, classDisplayName: classRow.display_name, cells, unresolved, legend };
           }
@@ -181,14 +403,21 @@ export async function getClassTimetable(classId: string, forceLive = false): Pro
   }
 
   try {
-    const [{ data: classRow, error: classErr }, { data: workload, error: workloadErr }, { data: slots, error: slotsErr }] =
-      await Promise.all([
-        supabase.from('tt_classes').select('*').eq('id', classId).single(),
-        supabase.from('tt_workload').select('*, staff:tt_staff(*)').eq('class_id', classId),
-        supabase.from('tt_slots').select('*, workload:tt_workload(*, staff:tt_staff(*))').eq('class_id', classId),
-      ]);
+    const [
+      { data: classRow, error: classErr },
+      { data: workload, error: workloadErr },
+      { data: slots, error: slotsErr },
+      { data: staffData },
+    ] = await Promise.all([
+      supabase.from('tt_classes').select('*').eq('id', classId).single(),
+      supabase.from('tt_workload').select('*, staff:tt_staff(*)').eq('class_id', classId),
+      supabase.from('tt_slots').select('*, workload:tt_workload(*, staff:tt_staff(*))').eq('class_id', classId),
+      supabase.from('tt_staff').select('*'),
+    ]);
 
     if (!classErr && !workloadErr && !slotsErr && classRow) {
+      const staffList: TTStaff[] =
+        staffData && staffData.length > 0 ? (staffData as TTStaff[]) : getFallbackTTStaff();
       const cells: GridCellMap = {};
       const placedHoursByWorkload = new Map<string, number>();
 
@@ -214,7 +443,7 @@ export async function getClassTimetable(classId: string, forceLive = false): Pro
       }
 
       // If DB tt_slots is empty, check local generated slots snapshot
-      if ((!slots || slots.length === 0)) {
+      if (!slots || slots.length === 0) {
         const localGenerated = loadGeneratedSlotsMemory().filter((s: any) => s.class_id === classId);
         for (const s of localGenerated) {
           const key = slotKey(s.day_order, s.period);
@@ -264,8 +493,16 @@ export async function getClassTimetable(classId: string, forceLive = false): Pro
         staffName: w.staff?.full_name ?? 'Unknown',
       }));
 
-      const fixedSlots = await fetchFixedPeriodsForClass(classId, classRow.code);
-      mergeStep0FixedCellsAndLegend(classId, classRow.code, classRow.display_name, cells, legend, fixedSlots);
+      const fixedSlots = await fetchFixedPeriodsForClass(classId, classRow.code, staffList);
+      mergeStep0FixedCellsAndLegend(
+        classId,
+        classRow.code,
+        classRow.display_name,
+        cells,
+        legend,
+        fixedSlots,
+        staffList
+      );
 
       return { classId, classDisplayName: classRow.display_name, cells, unresolved, legend };
     }
@@ -274,6 +511,17 @@ export async function getClassTimetable(classId: string, forceLive = false): Pro
   }
 
   // Offline / Unmigrated Supabase Resilient Fallback
+  const fallbackClasses = getFallbackTTClasses();
+  const fallbackStaff = getFallbackTTStaff();
+  const matchedCls = fallbackClasses.find(
+    (c) =>
+      c.id === classId ||
+      c.code === classId ||
+      resolveActiveClassId(classId, fallbackClasses) === c.id
+  );
+  const resolvedClassCode = matchedCls?.code ?? classId;
+  const resolvedClassDisplayName = matchedCls?.display_name ?? classId;
+
   const cells: GridCellMap = {};
   const placedHoursByWorkload = new Map<string, number>();
   const localGenerated = loadGeneratedSlotsMemory().filter((s: any) => s.class_id === classId);
@@ -288,8 +536,8 @@ export async function getClassTimetable(classId: string, forceLive = false): Pro
       subjectName: s.subject_name,
       staffShortCode: s.staff_short_code ?? '?',
       staffName: s.staff_full_name ?? 'Unknown',
-      classCode: classId,
-      classDisplayName: classId,
+      classCode: resolvedClassCode,
+      classDisplayName: resolvedClassDisplayName,
       isFixed: Boolean(s.is_fixed),
       isClash: Boolean(s.is_clash),
       clashReason: s.clash_reason ?? null,
@@ -319,10 +567,18 @@ export async function getClassTimetable(classId: string, forceLive = false): Pro
     staffName: w.staff?.full_name ?? 'Unknown',
   }));
 
-  const fixedSlots = await fetchFixedPeriodsForClass(classId, classId);
-  mergeStep0FixedCellsAndLegend(classId, classId, classId, cells, legend, fixedSlots);
+  const fixedSlots = await fetchFixedPeriodsForClass(classId, resolvedClassCode, fallbackStaff);
+  mergeStep0FixedCellsAndLegend(
+    classId,
+    resolvedClassCode,
+    resolvedClassDisplayName,
+    cells,
+    legend,
+    fixedSlots,
+    fallbackStaff
+  );
 
-  return { classId, classDisplayName: classId, cells, unresolved, legend };
+  return { classId, classDisplayName: resolvedClassDisplayName, cells, unresolved, legend };
 }
 
 export async function getStaffTimetable(staffId: string, forceLive = false): Promise<StaffTimetableData> {
@@ -337,10 +593,12 @@ export async function getStaffTimetable(staffId: string, forceLive = false): Pro
           'Cache-Control': 'no-cache, no-store, must-revalidate',
           Pragma: 'no-cache',
         };
-        const [staffRes, slotsRes, workloadRes] = await Promise.all([
+        const [staffRes, slotsRes, workloadRes, classesRes, allStaffRes] = await Promise.all([
           fetch(`${url}/rest/v1/tt_staff?id=eq.${staffId}&select=*&_ts=${Date.now()}`, { headers }),
           fetch(`${url}/rest/v1/tt_slots?select=*,workload:tt_workload(*,class:tt_classes(*))&_ts=${Date.now()}`, { headers }),
           fetch(`${url}/rest/v1/tt_workload?staff_id=eq.${staffId}&select=*,class:tt_classes(*)&_ts=${Date.now()}`, { headers }),
+          fetch(`${url}/rest/v1/tt_classes?select=*&order=sort_order&_ts=${Date.now()}`, { headers }),
+          fetch(`${url}/rest/v1/tt_staff?select=*&_ts=${Date.now()}`, { headers }),
         ]);
 
         if (staffRes.ok && slotsRes.ok && workloadRes.ok) {
@@ -349,6 +607,12 @@ export async function getStaffTimetable(staffId: string, forceLive = false): Pro
           if (staffRow) {
             const allSlots = await slotsRes.json();
             const workload = await workloadRes.json();
+            const classesList: TTClass[] = classesRes.ok
+              ? ((await classesRes.json()) as TTClass[])
+              : getFallbackTTClasses();
+            const staffList: TTStaff[] = allStaffRes.ok
+              ? ((await allStaffRes.json()) as TTStaff[])
+              : getFallbackTTStaff();
 
             const cells: GridCellMap = {};
             let totalHours = 0;
@@ -362,7 +626,7 @@ export async function getStaffTimetable(staffId: string, forceLive = false): Pro
                 workloadId: w.id,
                 subjectCode: w.subject_code,
                 subjectName: w.subject_name,
-                staffShortCode: '',
+                staffShortCode: staffRow.short_code ?? '',
                 staffName: staffRow.full_name,
                 classCode: w.class?.code ?? '',
                 classDisplayName: w.class?.display_name ?? 'Unknown class',
@@ -373,12 +637,24 @@ export async function getStaffTimetable(staffId: string, forceLive = false): Pro
               totalHours += 1;
             }
 
-            const legend = (workload ?? []).map((w: any) => ({
+            const legend: StaffTimetableData['legend'] = (workload ?? []).map((w: any) => ({
               classDisplayName: w.class?.display_name ?? 'Unknown class',
               subjectCode: w.subject_code,
               subjectName: w.subject_name,
               hoursPerWeek: w.hours_per_week,
             }));
+
+            const fixedByClass = await fetchAllFixedPeriodsForView(classesList, staffList);
+            totalHours += mergeStep0StaffSlotsAndLegend(
+              staffId,
+              staffRow.short_code ?? '',
+              staffRow.full_name,
+              fixedByClass,
+              classesList,
+              staffList,
+              cells,
+              legend
+            );
 
             return { staffId, staffName: staffRow.full_name, totalHours, cells, legend };
           }
@@ -390,14 +666,26 @@ export async function getStaffTimetable(staffId: string, forceLive = false): Pro
   }
 
   try {
-    const [{ data: staffRow, error: staffErr }, { data: slots, error: slotsErr }, { data: workload, error: workloadErr }] =
-      await Promise.all([
-        supabase.from('tt_staff').select('*').eq('id', staffId).single(),
-        supabase.from('tt_slots').select('*, workload:tt_workload(*, class:tt_classes(*))').eq('workload.staff_id', staffId),
-        supabase.from('tt_workload').select('*, class:tt_classes(*)').eq('staff_id', staffId),
-      ]);
+    const [
+      { data: staffRow, error: staffErr },
+      { data: slots, error: slotsErr },
+      { data: workload, error: workloadErr },
+      { data: classesData },
+      { data: allStaffData },
+    ] = await Promise.all([
+      supabase.from('tt_staff').select('*').eq('id', staffId).single(),
+      supabase.from('tt_slots').select('*, workload:tt_workload(*, class:tt_classes(*))').eq('workload.staff_id', staffId),
+      supabase.from('tt_workload').select('*, class:tt_classes(*)').eq('staff_id', staffId),
+      supabase.from('tt_classes').select('*').order('sort_order'),
+      supabase.from('tt_staff').select('*'),
+    ]);
 
     if (!staffErr && !slotsErr && !workloadErr && staffRow) {
+      const classesList: TTClass[] =
+        classesData && classesData.length > 0 ? (classesData as TTClass[]) : getFallbackTTClasses();
+      const staffList: TTStaff[] =
+        allStaffData && allStaffData.length > 0 ? (allStaffData as TTStaff[]) : getFallbackTTStaff();
+
       const cells: GridCellMap = {};
       let totalHours = 0;
 
@@ -410,7 +698,7 @@ export async function getStaffTimetable(staffId: string, forceLive = false): Pro
           workloadId: w.id,
           subjectCode: w.subject_code,
           subjectName: w.subject_name,
-          staffShortCode: '',
+          staffShortCode: staffRow.short_code ?? '',
           staffName: staffRow.full_name,
           classCode: w.class?.code ?? '',
           classDisplayName: w.class?.display_name ?? 'Unknown class',
@@ -421,12 +709,51 @@ export async function getStaffTimetable(staffId: string, forceLive = false): Pro
         totalHours += 1;
       }
 
-      const legend = (workload ?? []).map((w: any) => ({
+      // If DB tt_slots is empty, also check local generated slots snapshot
+      if (!slots || slots.length === 0) {
+        const localGenerated = loadGeneratedSlotsMemory().filter((s: any) => s.staff_id === staffId);
+        for (const s of localGenerated) {
+          const key = slotKey(s.day_order, s.period);
+          if (!cells[key]) {
+            const matchedCls = classesList.find(
+              (c) => c.id === s.class_id || resolveActiveClassId(s.class_id, classesList) === c.id
+            );
+            cells[key] = {
+              slotId: s.id,
+              workloadId: s.workload_id,
+              subjectCode: s.subject_code,
+              subjectName: s.subject_name,
+              staffShortCode: staffRow.short_code ?? '',
+              staffName: staffRow.full_name,
+              classCode: matchedCls?.code ?? s.class_id,
+              classDisplayName: matchedCls?.display_name ?? s.class_id,
+              isFixed: Boolean(s.is_fixed),
+              isClash: Boolean(s.is_clash),
+              clashReason: s.clash_reason ?? null,
+            };
+            totalHours += 1;
+          }
+        }
+      }
+
+      const legend: StaffTimetableData['legend'] = (workload ?? []).map((w: any) => ({
         classDisplayName: w.class?.display_name ?? 'Unknown class',
         subjectCode: w.subject_code,
         subjectName: w.subject_name,
         hoursPerWeek: w.hours_per_week,
       }));
+
+      const fixedByClass = await fetchAllFixedPeriodsForView(classesList, staffList);
+      totalHours += mergeStep0StaffSlotsAndLegend(
+        staffId,
+        staffRow.short_code ?? '',
+        staffRow.full_name,
+        fixedByClass,
+        classesList,
+        staffList,
+        cells,
+        legend
+      );
 
       return { staffId, staffName: staffRow.full_name, totalHours, cells, legend };
     }
@@ -434,23 +761,36 @@ export async function getStaffTimetable(staffId: string, forceLive = false): Pro
     // Offline fallback below
   }
 
-  const memStaff = (loadTTStaffMemory() as TTStaff[]).find((s) => s.id === staffId);
+  const fallbackStaffList = getFallbackTTStaff();
+  const fallbackClasses = getFallbackTTClasses();
+  const memStaff = findTTStaff(fallbackStaffList, staffId);
   const staffName = memStaff?.full_name ?? staffId;
-  const localSlots = loadGeneratedSlotsMemory().filter((s: any) => s.staff_id === staffId);
+  const staffShortCode = memStaff?.short_code ?? staffId.replace(/^staff-/i, '');
+  const staffTokens = resolveStaffMatchSet(staffId, fallbackStaffList, staffShortCode);
+
+  const localSlots = loadGeneratedSlotsMemory().filter((s: any) => {
+    const sid = String(s.staff_id || '').trim().toUpperCase();
+    const scode = String(s.staff_short_code || '').trim().toUpperCase();
+    return staffTokens.has(sid) || (scode ? staffTokens.has(scode) : false);
+  });
+
   const cells: GridCellMap = {};
   let totalHours = 0;
 
   for (const s of localSlots) {
     const key = slotKey(s.day_order, s.period);
+    const matchedCls = fallbackClasses.find(
+      (c) => c.id === s.class_id || resolveActiveClassId(s.class_id, fallbackClasses) === c.id
+    );
     cells[key] = {
       slotId: s.id,
       workloadId: s.workload_id,
       subjectCode: s.subject_code,
       subjectName: s.subject_name,
-      staffShortCode: '',
+      staffShortCode,
       staffName,
-      classCode: s.class_id,
-      classDisplayName: s.class_id,
+      classCode: matchedCls?.code ?? s.class_id,
+      classDisplayName: matchedCls?.display_name ?? s.class_id,
       isFixed: Boolean(s.is_fixed),
       isClash: Boolean(s.is_clash),
       clashReason: s.clash_reason ?? null,
@@ -458,7 +798,40 @@ export async function getStaffTimetable(staffId: string, forceLive = false): Pro
     totalHours += 1;
   }
 
-  return { staffId, staffName, totalHours, cells, legend: [] };
+  // Group regular generated slots into legend rows
+  const legendMap = new Map<
+    string,
+    { classDisplayName: string; subjectCode: string; subjectName: string; hoursPerWeek: number }
+  >();
+  for (const cell of Object.values(cells)) {
+    const gKey = `${cell.classDisplayName}::${cell.subjectCode}`;
+    const existing = legendMap.get(gKey);
+    if (existing) {
+      existing.hoursPerWeek += 1;
+    } else {
+      legendMap.set(gKey, {
+        classDisplayName: cell.classDisplayName,
+        subjectCode: cell.subjectCode,
+        subjectName: cell.subjectName || cell.subjectCode,
+        hoursPerWeek: 1,
+      });
+    }
+  }
+  const legend: StaffTimetableData['legend'] = Array.from(legendMap.values());
+
+  const fixedByClass = await fetchAllFixedPeriodsForView(fallbackClasses, fallbackStaffList);
+  totalHours += mergeStep0StaffSlotsAndLegend(
+    staffId,
+    staffShortCode,
+    staffName,
+    fixedByClass,
+    fallbackClasses,
+    fallbackStaffList,
+    cells,
+    legend
+  );
+
+  return { staffId, staffName, totalHours, cells, legend };
 }
 
 export async function manuallyPlaceSlot(

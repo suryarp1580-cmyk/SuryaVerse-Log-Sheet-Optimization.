@@ -30,10 +30,16 @@ import { buildYearGroups, type YearGroupSection } from '../../lib/timetable/work
 import {
   buildDefaultFixedSlotsForClass,
   computeNextFixedPeriodsMap,
+  computeNextLabBlockStaffMap,
+  formatLabBlockPeriodRange,
+  getContiguousLabBlock,
   getFixedSlotsForClass,
   getYearGroupPolicy,
+  parseFixedSlotStaffIds,
   persistFixedPeriodCellToSupabase,
+  persistFixedPeriodSlotsToSupabase,
   persistFixedPeriodsForClassToSupabase,
+  syncStep0LabStaffToTimetableEntries,
 } from '../../lib/timetable/fixed-periods-api';
 import { findTTStaff } from '../../lib/staffUtils';
 import { saveFixedPeriodsMemory } from '../../lib/memoryStorage';
@@ -115,6 +121,8 @@ export default function FixedPeriodsSetup({
     dayOrder: number;
     period: number;
     slotType: FixedPeriodType;
+    blockRangeLabel?: string;
+    selectedStaffIds: string[];
     anchorRect: { top: number; left: number; bottom: number; width: number };
   } | null>(null);
   const [staffCodeInput, setStaffCodeInput] = useState('');
@@ -199,22 +207,60 @@ export default function FixedPeriodsSetup({
     void persistFixedPeriodCellToSupabase(classId, dayOrder, period, slotType, staffIdOrNull);
   };
 
+  const commitLabBlockAssignedStaff = (
+    classId: string,
+    dayOrder: number,
+    period: number,
+    nextStaffList: TTStaff[]
+  ) => {
+    const nextIds = nextStaffList.map((s) => s.id);
+    const { nextMap, updatedBlockSlots } = computeNextLabBlockStaffMap(
+      fixedPeriodsByClass,
+      classId,
+      dayOrder,
+      period,
+      nextIds
+    );
+    onFixedPeriodsChange(nextMap);
+
+    const rangeLabel = formatLabBlockPeriodRange(updatedBlockSlots) || `P${period}`;
+    const codesLabel = nextStaffList.map((s) => s.short_code).join('/');
+    setLastSavedNotice(
+      nextStaffList.length > 0
+        ? `Assigned ${codesLabel} to LAB (${rangeLabel}) on Day ${DAY_ORDER_LABELS[dayOrder as keyof typeof DAY_ORDER_LABELS]}`
+        : `Cleared optional staff on LAB (${rangeLabel}) on Day ${DAY_ORDER_LABELS[dayOrder as keyof typeof DAY_ORDER_LABELS]}`
+    );
+
+    void persistFixedPeriodSlotsToSupabase(updatedBlockSlots);
+    const classCode = classes.find((c) => c.id === classId)?.code || classId;
+    syncStep0LabStaffToTimetableEntries(classId, classCode, updatedBlockSlots, staff);
+  };
+
   const openStaffEditor = (
     classId: string,
     dayOrder: number,
     period: number,
     slotType: FixedPeriodType,
-    currentAssigned: TTStaff | undefined,
+    currentAssignedList: TTStaff[],
     triggerEl: HTMLElement
   ) => {
     const rect = triggerEl.getBoundingClientRect();
-    setStaffCodeInput(currentAssigned?.short_code || '');
+    let blockRangeLabel: string | undefined;
+    if (slotType === 'LAB') {
+      const classSlots = getFixedSlotsForClass(fixedPeriodsByClass, classId, classes);
+      const block = getContiguousLabBlock(classSlots, dayOrder, period);
+      blockRangeLabel = formatLabBlockPeriodRange(block);
+    }
+
+    setStaffCodeInput(slotType === 'LAB' ? '' : (currentAssignedList[0]?.short_code || ''));
     setStaffInputError(null);
     setEditingCell({
       classId,
       dayOrder,
       period,
       slotType,
+      blockRangeLabel,
+      selectedStaffIds: currentAssignedList.map((s) => s.id),
       anchorRect: {
         top: rect.top,
         left: rect.left,
@@ -258,17 +304,30 @@ export default function FixedPeriodsSetup({
         : `Opened Day ${DAY_ORDER_LABELS[dayOrder as keyof typeof DAY_ORDER_LABELS]} · P${period} for subject scheduling`
     );
 
-    // Non-blocking sync to Supabase
-    const updatedSlot = updatedMap[classId]?.find(
+    const updatedList = updatedMap[classId] ?? [];
+    const updatedSlot = updatedList.find(
       (s) => s.day_order === dayOrder && s.period === period
     );
-    void persistFixedPeriodCellToSupabase(
-      classId,
-      dayOrder,
-      period,
-      nextType,
-      updatedSlot?.assigned_staff_id ?? null
-    );
+
+    if (nextType === 'LAB') {
+      const block = getContiguousLabBlock(updatedList, dayOrder, period);
+      void persistFixedPeriodSlotsToSupabase(block.length > 0 ? block : updatedSlot ? [updatedSlot] : []);
+      const classCode = classes.find((c) => c.id === classId)?.code || classId;
+      syncStep0LabStaffToTimetableEntries(
+        classId,
+        classCode,
+        block.length > 0 ? block : updatedSlot ? [updatedSlot] : [],
+        staff
+      );
+    } else {
+      void persistFixedPeriodCellToSupabase(
+        classId,
+        dayOrder,
+        period,
+        nextType,
+        updatedSlot?.assigned_staff_id ?? null
+      );
+    }
   };
 
   const handleApplyYearDefaults = () => {
@@ -439,10 +498,14 @@ export default function FixedPeriodsSetup({
                     const assigned = cellLookup.get(`${day}_${periodNum}`);
                     const slotType = assigned?.slot_type ?? null;
                     const style = slotType ? TOOL_STYLES[slotType] : null;
-                    const assignedStaff =
-                      assigned?.assigned_staff_id
-                        ? findTTStaff(staff, assigned.assigned_staff_id)
-                        : undefined;
+                    const assignedStaffIds = assigned ? parseFixedSlotStaffIds(assigned, staff) : [];
+                    const assignedStaffList = assignedStaffIds
+                      .map((id) => findTTStaff(staff, id))
+                      .filter((s): s is TTStaff => Boolean(s));
+                    const staffCodeDisplay = assignedStaffList.map((s) => s.short_code).join('/');
+                    const staffNamesTooltip = assignedStaffList
+                      .map((s) => `${s.short_code} — ${s.full_name}`)
+                      .join(', ');
 
                     return (
                       <td
@@ -461,13 +524,13 @@ export default function FixedPeriodsSetup({
                                   e.preventDefault();
                                   handleCellClick(sec.classId, day, periodNum, slotType);
                                 }}
-                                title={`${TOOL_STYLES[slotType].fullName} locked on Day ${DAY_ORDER_LABELS[day]} Period ${periodNum}${assignedStaff ? ` (${assignedStaff.short_code} — ${assignedStaff.full_name})` : ''}. Click to toggle/replace.`}
+                                title={`${TOOL_STYLES[slotType].fullName} locked on Day ${DAY_ORDER_LABELS[day]} Period ${periodNum}${staffNamesTooltip ? ` (${staffNamesTooltip})` : ''}. Click to toggle/replace.`}
                                 className="inline-flex items-center justify-center gap-0.5 leading-tight hover:brightness-95 cursor-pointer"
                               >
                                 <Lock className="w-2.5 h-2.5 opacity-70 shrink-0" />
                                 <span>{style.label}</span>
                               </button>
-                              {assignedStaff && (
+                              {assignedStaffList.length > 0 && (
                                 <button
                                   type="button"
                                   onClick={(e) => {
@@ -477,18 +540,18 @@ export default function FixedPeriodsSetup({
                                       day,
                                       periodNum,
                                       slotType,
-                                      assignedStaff,
+                                      assignedStaffList,
                                       e.currentTarget
                                     );
                                   }}
-                                  title={`Assigned: ${assignedStaff.short_code} — ${assignedStaff.full_name} (click to edit or clear)`}
+                                  title={`Assigned: ${staffNamesTooltip} (click to edit or clear)`}
                                   className="px-1 rounded bg-white/80 border border-current/25 text-[9.5px] font-bold leading-tight hover:bg-white cursor-pointer"
                                 >
-                                  ({assignedStaff.short_code})
+                                  ({staffCodeDisplay})
                                 </button>
                               )}
                             </div>
-                            {!assignedStaff && (
+                            {assignedStaffList.length === 0 && (
                               <button
                                 type="button"
                                 onClick={(e) => {
@@ -498,11 +561,11 @@ export default function FixedPeriodsSetup({
                                     day,
                                     periodNum,
                                     slotType,
-                                    undefined,
+                                    [],
                                     e.currentTarget
                                   );
                                 }}
-                                title="Optional: assign a staff member to this fixed period"
+                                title="Optional: assign staff to this fixed period"
                                 className="text-[9px] leading-none font-normal opacity-60 hover:opacity-100 hover:underline pb-0.5 cursor-pointer"
                               >
                                 + Add staff
@@ -704,164 +767,377 @@ export default function FixedPeriodsSetup({
       {editingCell &&
         typeof document !== 'undefined' &&
         createPortal(
-          <div
-            ref={popoverRef}
-            style={{
-              position: 'fixed',
-              top: Math.min(
-                editingCell.anchorRect.bottom + 6,
-                Math.max(12, window.innerHeight - 175)
-              ),
-              left: Math.min(
-                Math.max(12, editingCell.anchorRect.left + editingCell.anchorRect.width / 2 - 128),
-                Math.max(12, window.innerWidth - 272)
-              ),
-            }}
-            className="z-50 w-64 bg-white border border-[#C9BEA4] rounded-md shadow-xl p-2.5 space-y-2"
-          >
-            <div className="flex items-center justify-between border-b border-[#EDE7D8] pb-1">
-              <span className="text-[11px] font-serif font-semibold text-[#3A0D0D]">
-                {editingCell.slotType} · Day{' '}
-                {DAY_ORDER_LABELS[editingCell.dayOrder as keyof typeof DAY_ORDER_LABELS]} P
-                {editingCell.period} — Staff (Optional)
-              </span>
-              <button
-                type="button"
-                onClick={() => setEditingCell(null)}
-                className="text-[#8A806D] hover:text-[#3A0D0D] p-0.5 cursor-pointer"
-                aria-label="Close staff selector"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
+          (() => {
+            const isLabMode = editingCell.slotType === 'LAB';
+            const selectedLabStaff: TTStaff[] = isLabMode
+              ? editingCell.selectedStaffIds
+                  .map((id) => findTTStaff(staff, id))
+                  .filter((s): s is TTStaff => Boolean(s))
+              : [];
 
-            <input
-              type="text"
-              autoFocus
-              autoComplete="off"
-              placeholder="Staff code (e.g. TP)"
-              className={`${inputClass} uppercase font-mono text-xs py-1`}
-              value={staffCodeInput}
-              onChange={(e) => {
-                const val = e.target.value;
-                setStaffCodeInput(val);
-                const trimmed = val.trim();
-                if (!trimmed) {
-                  setStaffInputError(null);
-                  commitCellAssignedStaff(
-                    editingCell.classId,
-                    editingCell.dayOrder,
-                    editingCell.period,
-                    editingCell.slotType,
-                    null
-                  );
-                  return;
-                }
-                const match = findExactStaffByCode(trimmed);
-                if (match) {
-                  setStaffInputError(null);
-                  commitCellAssignedStaff(
-                    editingCell.classId,
-                    editingCell.dayOrder,
-                    editingCell.period,
-                    editingCell.slotType,
-                    match
-                  );
-                } else {
-                  setStaffInputError(null);
-                }
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  const trimmed = staffCodeInput.trim();
-                  if (!trimmed) {
-                    setEditingCell(null);
-                    return;
-                  }
-                  const match = findExactStaffByCode(trimmed);
-                  if (match) {
-                    setStaffInputError(null);
-                    commitCellAssignedStaff(
-                      editingCell.classId,
-                      editingCell.dayOrder,
-                      editingCell.period,
-                      editingCell.slotType,
-                      match
-                    );
-                    setEditingCell(null);
-                  } else {
-                    setStaffInputError(`Unknown code "${trimmed.toUpperCase()}". Pick from directory below.`);
-                  }
-                }
-              }}
-            />
+            const addLabStaffFromInput = (rawText: string, closeAfterIfEmpty = false): boolean => {
+              const trimmed = rawText.trim();
+              if (!trimmed) {
+                if (closeAfterIfEmpty) setEditingCell(null);
+                return true;
+              }
+              const tokens = trimmed
+                .split(/[,/+\s]+/)
+                .map((t) => t.trim())
+                .filter(Boolean);
 
-            <select
-              className="text-[11px] bg-[#FAF7F1] border border-[#E4DCC9] rounded px-2 py-1 text-[#4A4038] w-full focus:outline-hidden"
-              value={findExactStaffByCode(staffCodeInput)?.short_code || ''}
-              onChange={(e) => {
-                const pickedCode = e.target.value;
-                if (!pickedCode) return;
-                const pickedStaff = findExactStaffByCode(pickedCode);
-                if (!pickedStaff) return;
-                setStaffCodeInput(pickedStaff.short_code);
-                setStaffInputError(null);
-                commitCellAssignedStaff(
-                  editingCell.classId,
-                  editingCell.dayOrder,
-                  editingCell.period,
-                  editingCell.slotType,
-                  pickedStaff
+              const matchedToAdd: TTStaff[] = [];
+              const unknownTokens: string[] = [];
+
+              for (const tok of tokens) {
+                const m = findExactStaffByCode(tok);
+                if (m) matchedToAdd.push(m);
+                else unknownTokens.push(tok.toUpperCase());
+              }
+
+              if (unknownTokens.length > 0) {
+                setStaffInputError(
+                  `Unknown code "${unknownTokens.join(', ')}". Pick from directory below.`
                 );
-                setEditingCell(null);
-              }}
-            >
-              <option value="">Quick pick from Staff Directory…</option>
-              {staff.map((s) => (
-                <option key={s.id} value={s.short_code}>
-                  {s.short_code} — {s.full_name}
-                  {s.is_hod ? ' (HOD)' : ''}
-                </option>
-              ))}
-            </select>
+                return false;
+              }
 
-            {staffInputError && (
-              <p className="text-[10px] text-[#8C1F1F] leading-tight">{staffInputError}</p>
-            )}
+              const nextList = [...selectedLabStaff];
+              for (const m of matchedToAdd) {
+                if (!nextList.some((x) => x.id === m.id)) {
+                  nextList.push(m);
+                }
+              }
 
-            <div className="flex items-center justify-between pt-0.5">
-              {staffCodeInput.trim() ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setStaffCodeInput('');
-                    setStaffInputError(null);
-                    commitCellAssignedStaff(
-                      editingCell.classId,
-                      editingCell.dayOrder,
-                      editingCell.period,
-                      editingCell.slotType,
-                      null
-                    );
-                    setEditingCell(null);
-                  }}
-                  className="text-[10px] text-[#8C1F1F] hover:underline cursor-pointer"
-                >
-                  Clear staff
-                </button>
-              ) : (
-                <span className="text-[10px] text-[#7C6E59]">Optional · saves instantly</span>
-              )}
-              <button
-                type="button"
-                onClick={() => setEditingCell(null)}
-                className="text-[10px] font-semibold text-[#3A0D0D] hover:underline cursor-pointer"
+              setStaffCodeInput('');
+              setStaffInputError(null);
+              setEditingCell((prev) =>
+                prev ? { ...prev, selectedStaffIds: nextList.map((s) => s.id) } : null
+              );
+              commitLabBlockAssignedStaff(
+                editingCell.classId,
+                editingCell.dayOrder,
+                editingCell.period,
+                nextList
+              );
+              return true;
+            };
+
+            const removeLabStaff = (staffIdToRemove: string) => {
+              const nextList = selectedLabStaff.filter((s) => s.id !== staffIdToRemove);
+              setStaffInputError(null);
+              setEditingCell((prev) =>
+                prev ? { ...prev, selectedStaffIds: nextList.map((s) => s.id) } : null
+              );
+              commitLabBlockAssignedStaff(
+                editingCell.classId,
+                editingCell.dayOrder,
+                editingCell.period,
+                nextList
+              );
+            };
+
+            return (
+              <div
+                ref={popoverRef}
+                style={{
+                  position: 'fixed',
+                  top: Math.min(
+                    editingCell.anchorRect.bottom + 6,
+                    Math.max(12, window.innerHeight - (isLabMode ? 225 : 175))
+                  ),
+                  left: Math.min(
+                    Math.max(12, editingCell.anchorRect.left + editingCell.anchorRect.width / 2 - 128),
+                    Math.max(12, window.innerWidth - 272)
+                  ),
+                }}
+                className="z-50 w-64 bg-white border border-[#C9BEA4] rounded-md shadow-xl p-2.5 space-y-2"
               >
-                Done
-              </button>
-            </div>
-          </div>,
+                <div className="flex items-center justify-between border-b border-[#EDE7D8] pb-1">
+                  <span className="text-[11px] font-serif font-semibold text-[#3A0D0D]">
+                    {editingCell.slotType} · Day{' '}
+                    {DAY_ORDER_LABELS[editingCell.dayOrder as keyof typeof DAY_ORDER_LABELS]}{' '}
+                    {isLabMode
+                      ? editingCell.blockRangeLabel || `P${editingCell.period}`
+                      : `P${editingCell.period}`}{' '}
+                    — Staff (Optional)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setEditingCell(null)}
+                    className="text-[#8A806D] hover:text-[#3A0D0D] p-0.5 cursor-pointer"
+                    aria-label="Close staff selector"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                {isLabMode ? (
+                  <>
+                    {/* Removable tags for all staff assigned to this LAB block */}
+                    {selectedLabStaff.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {selectedLabStaff.map((s) => (
+                          <span
+                            key={s.id}
+                            title={s.full_name}
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#FBF1E6] border border-[#DFBA8C] text-[#7A480F] text-[10px] font-mono font-bold"
+                          >
+                            <span>{s.short_code}</span>
+                            <button
+                              type="button"
+                              onClick={() => removeLabStaff(s.id)}
+                              className="hover:text-[#8C1F1F] cursor-pointer leading-none"
+                              aria-label={`Remove ${s.short_code}`}
+                              title={`Remove ${s.short_code} from block`}
+                            >
+                              <X className="w-2.5 h-2.5" />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="text"
+                        autoFocus
+                        autoComplete="off"
+                        placeholder="Add staff code (e.g. TP, DA)"
+                        className={`${inputClass} uppercase font-mono text-xs py-1 flex-1`}
+                        value={staffCodeInput}
+                        onChange={(e) => {
+                          setStaffCodeInput(e.target.value);
+                          setStaffInputError(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            addLabStaffFromInput(staffCodeInput, true);
+                          }
+                        }}
+                      />
+                      {staffCodeInput.trim() && (
+                        <button
+                          type="button"
+                          onClick={() => addLabStaffFromInput(staffCodeInput, false)}
+                          className="px-2 py-1 rounded bg-[#3A0D0D] text-[#D4AF37] text-[10px] font-semibold hover:brightness-110 cursor-pointer shrink-0"
+                        >
+                          Add
+                        </button>
+                      )}
+                    </div>
+
+                    <select
+                      className="text-[11px] bg-[#FAF7F1] border border-[#E4DCC9] rounded px-2 py-1 text-[#4A4038] w-full focus:outline-hidden"
+                      value=""
+                      onChange={(e) => {
+                        const pickedCode = e.target.value;
+                        if (!pickedCode) return;
+                        const pickedStaff = findExactStaffByCode(pickedCode);
+                        if (!pickedStaff) return;
+                        const nextList = selectedLabStaff.some((x) => x.id === pickedStaff.id)
+                          ? selectedLabStaff
+                          : [...selectedLabStaff, pickedStaff];
+                        setStaffInputError(null);
+                        setEditingCell((prev) =>
+                          prev ? { ...prev, selectedStaffIds: nextList.map((s) => s.id) } : null
+                        );
+                        commitLabBlockAssignedStaff(
+                          editingCell.classId,
+                          editingCell.dayOrder,
+                          editingCell.period,
+                          nextList
+                        );
+                      }}
+                    >
+                      <option value="">Quick pick from Staff Directory…</option>
+                      {staff.map((s) => (
+                        <option key={s.id} value={s.short_code}>
+                          {s.short_code} — {s.full_name}
+                          {s.is_hod ? ' (HOD)' : ''}
+                          {selectedLabStaff.some((x) => x.id === s.id) ? ' ✓' : ''}
+                        </option>
+                      ))}
+                    </select>
+
+                    {staffInputError && (
+                      <p className="text-[10px] text-[#8C1F1F] leading-tight">{staffInputError}</p>
+                    )}
+
+                    <div className="flex items-center justify-between pt-0.5">
+                      {selectedLabStaff.length > 0 ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setStaffCodeInput('');
+                            setStaffInputError(null);
+                            setEditingCell((prev) =>
+                              prev ? { ...prev, selectedStaffIds: [] } : null
+                            );
+                            commitLabBlockAssignedStaff(
+                              editingCell.classId,
+                              editingCell.dayOrder,
+                              editingCell.period,
+                              []
+                            );
+                            setEditingCell(null);
+                          }}
+                          className="text-[10px] text-[#8C1F1F] hover:underline cursor-pointer"
+                        >
+                          Clear staff
+                        </button>
+                      ) : (
+                        <span className="text-[10px] text-[#7C6E59]">Applies to whole LAB block</span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (staffCodeInput.trim()) {
+                            const ok = addLabStaffFromInput(staffCodeInput, false);
+                            if (!ok) return;
+                          }
+                          setEditingCell(null);
+                        }}
+                        className="text-[10px] font-semibold text-[#3A0D0D] hover:underline cursor-pointer"
+                      >
+                        Done
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <input
+                      type="text"
+                      autoFocus
+                      autoComplete="off"
+                      placeholder="Staff code (e.g. TP)"
+                      className={`${inputClass} uppercase font-mono text-xs py-1`}
+                      value={staffCodeInput}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setStaffCodeInput(val);
+                        const trimmed = val.trim();
+                        if (!trimmed) {
+                          setStaffInputError(null);
+                          commitCellAssignedStaff(
+                            editingCell.classId,
+                            editingCell.dayOrder,
+                            editingCell.period,
+                            editingCell.slotType,
+                            null
+                          );
+                          return;
+                        }
+                        const match = findExactStaffByCode(trimmed);
+                        if (match) {
+                          setStaffInputError(null);
+                          commitCellAssignedStaff(
+                            editingCell.classId,
+                            editingCell.dayOrder,
+                            editingCell.period,
+                            editingCell.slotType,
+                            match
+                          );
+                        } else {
+                          setStaffInputError(null);
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          const trimmed = staffCodeInput.trim();
+                          if (!trimmed) {
+                            setEditingCell(null);
+                            return;
+                          }
+                          const match = findExactStaffByCode(trimmed);
+                          if (match) {
+                            setStaffInputError(null);
+                            commitCellAssignedStaff(
+                              editingCell.classId,
+                              editingCell.dayOrder,
+                              editingCell.period,
+                              editingCell.slotType,
+                              match
+                            );
+                            setEditingCell(null);
+                          } else {
+                            setStaffInputError(`Unknown code "${trimmed.toUpperCase()}". Pick from directory below.`);
+                          }
+                        }
+                      }}
+                    />
+
+                    <select
+                      className="text-[11px] bg-[#FAF7F1] border border-[#E4DCC9] rounded px-2 py-1 text-[#4A4038] w-full focus:outline-hidden"
+                      value={findExactStaffByCode(staffCodeInput)?.short_code || ''}
+                      onChange={(e) => {
+                        const pickedCode = e.target.value;
+                        if (!pickedCode) return;
+                        const pickedStaff = findExactStaffByCode(pickedCode);
+                        if (!pickedStaff) return;
+                        setStaffCodeInput(pickedStaff.short_code);
+                        setStaffInputError(null);
+                        commitCellAssignedStaff(
+                          editingCell.classId,
+                          editingCell.dayOrder,
+                          editingCell.period,
+                          editingCell.slotType,
+                          pickedStaff
+                        );
+                        setEditingCell(null);
+                      }}
+                    >
+                      <option value="">Quick pick from Staff Directory…</option>
+                      {staff.map((s) => (
+                        <option key={s.id} value={s.short_code}>
+                          {s.short_code} — {s.full_name}
+                          {s.is_hod ? ' (HOD)' : ''}
+                        </option>
+                      ))}
+                    </select>
+
+                    {staffInputError && (
+                      <p className="text-[10px] text-[#8C1F1F] leading-tight">{staffInputError}</p>
+                    )}
+
+                    <div className="flex items-center justify-between pt-0.5">
+                      {staffCodeInput.trim() ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setStaffCodeInput('');
+                            setStaffInputError(null);
+                            commitCellAssignedStaff(
+                              editingCell.classId,
+                              editingCell.dayOrder,
+                              editingCell.period,
+                              editingCell.slotType,
+                              null
+                            );
+                            setEditingCell(null);
+                          }}
+                          className="text-[10px] text-[#8C1F1F] hover:underline cursor-pointer"
+                        >
+                          Clear staff
+                        </button>
+                      ) : (
+                        <span className="text-[10px] text-[#7C6E59]">Optional · saves instantly</span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setEditingCell(null)}
+                        className="text-[10px] font-semibold text-[#3A0D0D] hover:underline cursor-pointer"
+                      >
+                        Done
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })(),
           document.body
         )}
     </div>

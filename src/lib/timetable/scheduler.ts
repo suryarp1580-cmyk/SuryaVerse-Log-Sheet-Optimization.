@@ -114,6 +114,23 @@ export interface BlockedClassSlot {
   period: number;
   slotType: 'LANG' | 'ENG' | 'LAB';
   assignedStaffId?: string | null;
+  assignedStaffIds?: string[];
+}
+
+function getBlockedSlotStaffIds(b: BlockedClassSlot): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (id: string | null | undefined) => {
+    const t = (id || '').trim();
+    if (!t || seen.has(t)) return;
+    seen.add(t);
+    out.push(t);
+  };
+  if (Array.isArray(b.assignedStaffIds)) {
+    for (const id of b.assignedStaffIds) add(id);
+  }
+  add(b.assignedStaffId);
+  return out;
 }
 
 export interface GenerateScheduleOptions {
@@ -201,17 +218,19 @@ export function detectFixedClashes(
   }
 
   for (const b of blockedSlots) {
-    if (!b.assignedStaffId) continue;
-    const key = `${b.assignedStaffId}_${b.dayOrder}_${b.period}`;
-    const list = byStaffSlot.get(key) ?? [];
-    list.push({
-      workloadId: `step0:${b.classId}:${b.dayOrder}:${b.period}`,
-      classId: b.classId,
-      staffId: b.assignedStaffId,
-      dayOrder: b.dayOrder,
-      period: b.period,
-    });
-    byStaffSlot.set(key, list);
+    const staffIds = getBlockedSlotStaffIds(b);
+    for (const staffId of staffIds) {
+      const key = `${staffId}_${b.dayOrder}_${b.period}`;
+      const list = byStaffSlot.get(key) ?? [];
+      list.push({
+        workloadId: `step0:${b.classId}:${b.dayOrder}:${b.period}`,
+        classId: b.classId,
+        staffId,
+        dayOrder: b.dayOrder,
+        period: b.period,
+      });
+      byStaffSlot.set(key, list);
+    }
   }
 
   for (const list of byStaffSlot.values()) {
@@ -551,7 +570,9 @@ function buildConstructiveState(
 
   for (const b of blockedSlots) {
     allClassIdSet.add(b.classId);
-    if (b.assignedStaffId) allStaffIdSet.add(b.assignedStaffId);
+    for (const sid of getBlockedSlotStaffIds(b)) {
+      allStaffIdSet.add(sid);
+    }
   }
   for (const fp of fixedPlacements) {
     allClassIdSet.add(fp.classId);
@@ -638,32 +659,33 @@ function buildConstructiveState(
     return entry;
   };
 
-  // 1. Reserve all Step 0 fixed slots (LANG, ENG, LAB) + optional assigned staff
+  // 1. Reserve all Step 0 fixed slots (LANG, ENG, LAB) + optional assigned staff (including multi-staff LAB blocks)
   for (const b of blockedSlots) {
     const cg = classGrid.get(b.classId)!;
     if (cg[b.dayOrder]?.[b.period]) continue;
-    const sid = b.assignedStaffId || null;
-    const sg = sid ? staffGrid.get(sid) : undefined;
-    const canAssignStaff = sid && (!sg || !sg[b.dayOrder][b.period]);
+    const staffIds = getBlockedSlotStaffIds(b);
 
     cg[b.dayOrder][b.period] = {
       kind: 'BLOCKED',
       workloadId: '',
-      staffId: sid,
+      staffId: staffIds[0] ?? null,
       subjectCode: b.slotType,
       subjectKey: normalizeSubjectKey(b.slotType),
       isStep0Lab: b.slotType === 'LAB',
       isRule3Exempt: true,
     };
-    if (canAssignStaff && sid) {
+    for (const sid of staffIds) {
       ensureStaff(sid);
-      staffGrid.get(sid)![b.dayOrder][b.period] = {
-        kind: 'BLOCKED',
-        classId: b.classId,
-        subjectCode: b.slotType,
-        isStep0Lab: b.slotType === 'LAB',
-      };
-      staffDayCount.get(sid)![b.dayOrder]++;
+      const sg = staffGrid.get(sid)!;
+      if (!sg[b.dayOrder][b.period]) {
+        sg[b.dayOrder][b.period] = {
+          kind: 'BLOCKED',
+          classId: b.classId,
+          subjectCode: b.slotType,
+          isStep0Lab: b.slotType === 'LAB',
+        };
+        staffDayCount.get(sid)![b.dayOrder]++;
+      }
     }
   }
 

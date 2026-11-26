@@ -510,6 +510,8 @@ export function ClassTimetablePdfPage({
                 let cellLabel = baseSubj;
                 if (plainLangEng) {
                   cellLabel = baseSubj;
+                } else if (baseSubj.toUpperCase() === 'LAB') {
+                  cellLabel = cleanStaff ? `LAB (${cleanStaff})` : 'LAB';
                 } else if (labOrSec) {
                   cellLabel = cleanStaff ? `${baseSubj} -${cleanStaff}` : baseSubj;
                 } else if (cleanStaff) {

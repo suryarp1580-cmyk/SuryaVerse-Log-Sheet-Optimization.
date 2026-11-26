@@ -8,7 +8,11 @@ import {
   loadMemoryData,
   loadWorkloadMemory,
 } from '../memoryStorage';
-import { getFixedSlotsForClass } from './fixed-periods-api';
+import {
+  getFixedSlotsForClass,
+  mergeLabBlockStaffInSlots,
+  parseFixedSlotStaffIds,
+} from './fixed-periods-api';
 import {
   slotKey,
   type ClassTimetableData,
@@ -133,12 +137,15 @@ function resolveReadableClassName(
   classes: TTClass[] = [],
   fallback?: string
 ): string {
+  const targetTok = normalizeClassToken(classIdOrCode);
   const matched = classes.find(
     (c) =>
       c.id === classIdOrCode ||
       c.code === classIdOrCode ||
-      normalizeClassToken(c.id) === normalizeClassToken(classIdOrCode) ||
-      normalizeClassToken(c.code) === normalizeClassToken(classIdOrCode)
+      c.display_name === classIdOrCode ||
+      normalizeClassToken(c.id) === targetTok ||
+      normalizeClassToken(c.code) === targetTok ||
+      normalizeClassToken(c.display_name) === targetTok
   );
   if (matched?.display_name) return matched.display_name;
 
@@ -185,7 +192,10 @@ export function enrichClassTimetableForPdf(
   }
 
   const memFixed = loadFixedPeriodsMemory() as FixedPeriodsByClass;
-  const fixedSlots = getFixedSlotsForClass(memFixed, data.classId, classes);
+  const fixedSlots = mergeLabBlockStaffInSlots(
+    getFixedSlotsForClass(memFixed, data.classId, classes),
+    staff
+  ).slots;
   const fixedByKey = new Map(fixedSlots.map((fs) => [slotKey(fs.day_order, fs.period), fs]));
 
   const enrichedCells: GridCellMap = {};
@@ -194,16 +204,27 @@ export function enrichClassTimetableForPdf(
     let staffShortCode = cell.staffShortCode;
     let staffName = cell.staffName;
 
-    if (
-      step0?.assigned_staff_id &&
-      (!staffShortCode || staffShortCode === 'FIXED' || staffShortCode === '?')
-    ) {
-      const resolvedStaff =
-        staffById.get(step0.assigned_staff_id) ||
-        staffByCode.get(step0.assigned_staff_id.trim().toUpperCase());
-      if (resolvedStaff) {
-        staffShortCode = resolvedStaff.short_code;
-        staffName = resolvedStaff.full_name;
+    if (step0 && (!staffShortCode || staffShortCode === 'FIXED' || staffShortCode === '?')) {
+      const parsedIds = parseFixedSlotStaffIds(step0, staff);
+      if (parsedIds.length > 0) {
+        const codes: string[] = [];
+        const names: string[] = [];
+        for (const sid of parsedIds) {
+          const resolvedStaff =
+            staffById.get(sid) ||
+            staffByCode.get(sid.trim().toUpperCase()) ||
+            staffByCode.get(sid.trim().toUpperCase().replace(/^STAFF-/, ''));
+          if (resolvedStaff) {
+            codes.push(resolvedStaff.short_code);
+            names.push(resolvedStaff.full_name);
+          } else {
+            codes.push(sid.replace(/^staff-/i, ''));
+          }
+        }
+        if (codes.length > 0) {
+          staffShortCode = codes.join('/');
+          staffName = names.length > 0 ? names.join(', ') : staffShortCode;
+        }
       }
     }
 
@@ -278,19 +299,47 @@ export function enrichStaffTimetableForPdf(
     };
   }
 
-  // Merge any Step 0 fixed slots explicitly assigned to this staff member
+  // Merge any Step 0 fixed slots explicitly assigned to this staff member (including multi-staff LAB blocks)
   const memFixed = loadFixedPeriodsMemory() as FixedPeriodsByClass;
-  const targetIds = new Set(
-    [data.staffId, matchedStaff?.id, matchedStaff?.short_code]
-      .filter((v): v is string => Boolean(v))
-      .map((v) => v.trim().toUpperCase())
-  );
+  const targetIds = new Set<string>();
+  const addTargetToken = (v: string | undefined | null) => {
+    const t = (v || '').trim().toUpperCase();
+    if (!t) return;
+    targetIds.add(t);
+    targetIds.add(t.startsWith('STAFF-') ? t.slice(6) : `STAFF-${t}`);
+  };
+  addTargetToken(data.staffId);
+  addTargetToken(matchedStaff?.id);
+  addTargetToken(matchedStaff?.short_code);
+
+  const staffById = new Map<string, TTStaff>();
+  const staffByCode = new Map<string, TTStaff>();
+  for (const s of staff) {
+    staffById.set(s.id, s);
+    staffByCode.set(s.short_code.trim().toUpperCase(), s);
+  }
+
+  const step0LegendMap = new Map<
+    string,
+    { classDisplayName: string; subjectCode: string; subjectName: string; hoursPerWeek: number }
+  >();
 
   for (const cls of classes) {
-    const fixedSlots = getFixedSlotsForClass(memFixed, cls.id, classes);
+    const fixedSlots = mergeLabBlockStaffInSlots(
+      getFixedSlotsForClass(memFixed, cls.id, classes),
+      staff
+    ).slots;
+    const clsReadable = resolveReadableClassName(cls.id, classes, cls.display_name);
+
     for (const fs of fixedSlots) {
-      if (!fs.assigned_staff_id) continue;
-      if (!targetIds.has(fs.assigned_staff_id.trim().toUpperCase())) continue;
+      const parsedIds = parseFixedSlotStaffIds(fs, staff);
+      const isForThisStaff = parsedIds.some((id) => {
+        const up = id.trim().toUpperCase();
+        if (targetIds.has(up)) return true;
+        const resolved = staffById.get(id) || staffByCode.get(up) || staffByCode.get(up.replace(/^STAFF-/, ''));
+        return resolved ? targetIds.has(resolved.short_code.trim().toUpperCase()) : false;
+      });
+      if (!isForThisStaff) continue;
 
       const key = slotKey(fs.day_order, fs.period);
       if (!enrichedCells[key]) {
@@ -302,11 +351,24 @@ export function enrichStaffTimetableForPdf(
           staffShortCode: staffShortCode || '',
           staffName,
           classCode: cls.code,
-          classDisplayName: cls.display_name,
+          classDisplayName: clsReadable,
           isFixed: true,
           isClash: false,
           clashReason: null,
         };
+      }
+
+      const gKey = `${clsReadable}::${fs.slot_type}`;
+      const existingGroup = step0LegendMap.get(gKey);
+      if (existingGroup) {
+        existingGroup.hoursPerWeek += 1;
+      } else {
+        step0LegendMap.set(gKey, {
+          classDisplayName: clsReadable,
+          subjectCode: fs.slot_type,
+          subjectName: fixedSlotSubjectName(fs.slot_type),
+          hoursPerWeek: 1,
+        });
       }
     }
   }
@@ -355,6 +417,23 @@ export function enrichStaffTimetableForPdf(
     legend = Array.from(grouped.values()).sort((a, b) =>
       a.classDisplayName.localeCompare(b.classDisplayName)
     );
+  } else {
+    // Merge Step 0 legend rows without duplicating rows already present from getStaffTimetable
+    for (const s0Item of step0LegendMap.values()) {
+      const s0ClassTok = normalizeClassToken(s0Item.classDisplayName);
+      const s0SubjUp = s0Item.subjectCode.trim().toUpperCase();
+      const match = legend.find(
+        (l) =>
+          (l.classDisplayName === s0Item.classDisplayName ||
+            normalizeClassToken(l.classDisplayName) === s0ClassTok) &&
+          l.subjectCode.trim().toUpperCase() === s0SubjUp
+      );
+      if (match) {
+        match.hoursPerWeek = Math.max(match.hoursPerWeek, s0Item.hoursPerWeek);
+      } else {
+        legend.push(s0Item);
+      }
+    }
   }
 
   const placedCount = Object.keys(enrichedCells).length;

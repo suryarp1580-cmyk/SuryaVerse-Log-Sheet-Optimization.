@@ -31,7 +31,7 @@ export default function WorkloadSummaryPanel({
 
   const workloadRows: StaffWorkloadRow[] = activeStaff.map(staff => ({
     staff,
-    workload: computeStaffWorkload(staff.id, dayOrder, timetableEntries, substitutions, logSheetId)
+    workload: computeStaffWorkload(staff.id, dayOrder, timetableEntries, substitutions, logSheetId, staff.code)
   }));
 
   // Sort rows based on sort preference (default: totalPeriods descending)

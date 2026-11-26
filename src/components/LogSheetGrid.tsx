@@ -53,7 +53,8 @@ export default function LogSheetGrid({
       .filter((s): s is Staff => !!s);
 
     // If staffIds was unpopulated or unlinked for a departmental subject, fallback to raw timetable mapping
-    if (originalStaff.length === 0 && !excludedFromSubstitution) {
+    // (Skip fallback for Step 0 LAB entries so an explicitly unstaffed LAB block displays as (Nil))
+    if (originalStaff.length === 0 && !excludedFromSubstitution && subjectCode.trim().toUpperCase() !== 'LAB') {
       const fallbackPeriod = rawTimetable[classSection.id]?.[activeDayOrder]?.[period - 1];
       if (fallbackPeriod?.staffCodes) {
         fallbackPeriod.staffCodes.forEach(code => {

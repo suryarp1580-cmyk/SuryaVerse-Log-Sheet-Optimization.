@@ -2,9 +2,9 @@
 // ACCFIN Timetable Generator — Step 0 Fixed Periods Data Layer
 // Manages college-mandated fixed slots (LANG, ENG, LAB) per class/section
 // before Workload Entry and Auto-Generation.
-// Persists immediately to local memory and synchronizes with Supabase
-// (`tt_fixed_periods`), with automatic one-time migration of legacy fixed rows
-// and sensible AMJC ACCFIN year-group defaults.
+// Consecutive LAB cells on the same Day Order within [1,2,3] or [4,5]
+// (never bridging Break between P3 and P4) form a single Lab Block sharing
+// one optional multi-staff list.
 // ============================================================================
 
 import { supabase, isExpectedSupabaseFallbackError } from '../supabaseClient';
@@ -14,12 +14,15 @@ import {
   loadFixedPeriodsMemory,
   saveFixedPeriodsMemory,
   loadWorkloadMemory,
+  loadMemoryData,
+  saveMemoryData,
 } from '../memoryStorage';
 import type {
   FixedPeriodType,
   FixedPeriodsByClass,
   TTClass,
   TTFixedPeriodSlot,
+  TTStaff,
   TTWorkload,
 } from './types';
 
@@ -31,6 +34,207 @@ function normalizeClassToken(value: string): string {
     .replace(/-AF-/, '-')
     .replace(/-AF$/, '')
     .replace(/\s+/g, '-');
+}
+
+function matchTTStaffToken(allStaff: TTStaff[], idOrCode: string): TTStaff | undefined {
+  const raw = (idOrCode || '').trim();
+  if (!raw) return undefined;
+  const upper = raw.toUpperCase();
+  const withoutPrefix = upper.startsWith('STAFF-') ? upper.slice(6) : upper;
+
+  return (
+    allStaff.find((s) => s.id.trim() === raw) ??
+    allStaff.find((s) => s.id.trim().toUpperCase() === upper) ??
+    allStaff.find((s) => s.short_code.trim().toUpperCase() === upper) ??
+    allStaff.find((s) => s.short_code.trim().toUpperCase() === withoutPrefix) ??
+    allStaff.find((s) => s.id.trim().toUpperCase() === `STAFF-${withoutPrefix}`)
+  );
+}
+
+/**
+ * Parses assigned staff IDs/codes from a TTFixedPeriodSlot.
+ * Supports both the array `assigned_staff_ids` and comma/slash-delimited `assigned_staff_id`.
+ */
+export function parseFixedSlotStaffIds(
+  slot: Pick<TTFixedPeriodSlot, 'assigned_staff_id' | 'assigned_staff_ids'> | null | undefined,
+  staffList?: TTStaff[]
+): string[] {
+  if (!slot) return [];
+  const rawTokens: string[] = [];
+
+  if (Array.isArray(slot.assigned_staff_ids) && slot.assigned_staff_ids.length > 0) {
+    for (const item of slot.assigned_staff_ids) {
+      if (typeof item === 'string' && item.trim()) {
+        rawTokens.push(item.trim());
+      }
+    }
+  } else if (typeof slot.assigned_staff_id === 'string' && slot.assigned_staff_id.trim()) {
+    const parts = slot.assigned_staff_id
+      .split(/[,/]+/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+    rawTokens.push(...parts);
+  }
+
+  const out: string[] = [];
+  const seenKeys = new Set<string>();
+
+  for (const tok of rawTokens) {
+    const resolved = staffList && staffList.length > 0 ? matchTTStaffToken(staffList, tok) : undefined;
+    const canonical = resolved ? resolved.id : tok;
+    const dedupKey = (resolved ? resolved.short_code : tok.replace(/^staff-/i, '')).trim().toUpperCase();
+    if (!seenKeys.has(dedupKey)) {
+      seenKeys.add(dedupKey);
+      out.push(canonical);
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Serializes a list of staff IDs into the backward-compatible string column `assigned_staff_id`.
+ */
+export function serializeFixedSlotStaffIds(staffIds: string[]): string | null {
+  const cleaned: string[] = [];
+  const seen = new Set<string>();
+  for (const id of staffIds) {
+    const t = (id || '').trim();
+    if (!t) continue;
+    const key = t.toUpperCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      cleaned.push(t);
+    }
+  }
+  return cleaned.length > 0 ? cleaned.join(',') : null;
+}
+
+/**
+ * Period segments separated by the 11:00–11:30 Break.
+ * P3 and P4 are never contiguous.
+ */
+function getPeriodSegment(period: number): number[] {
+  if (period >= 1 && period <= 3) return [1, 2, 3];
+  if (period === 4 || period === 5) return [4, 5];
+  return [];
+}
+
+/**
+ * Returns the maximal contiguous run of LAB slots on `dayOrder` containing `period`,
+ * strictly respecting the Break boundary between P3 and P4.
+ */
+export function getContiguousLabBlock(
+  slots: TTFixedPeriodSlot[],
+  dayOrder: number,
+  period: number
+): TTFixedPeriodSlot[] {
+  const segment = getPeriodSegment(period);
+  if (segment.length === 0) return [];
+
+  const byPeriod = new Map<number, TTFixedPeriodSlot>();
+  for (const s of slots) {
+    if (s.day_order === dayOrder && s.slot_type === 'LAB' && segment.includes(s.period)) {
+      byPeriod.set(s.period, s);
+    }
+  }
+
+  if (!byPeriod.has(period)) return [];
+
+  let start = period;
+  while (segment.includes(start - 1) && byPeriod.has(start - 1)) {
+    start--;
+  }
+  let end = period;
+  while (segment.includes(end + 1) && byPeriod.has(end + 1)) {
+    end++;
+  }
+
+  const block: TTFixedPeriodSlot[] = [];
+  for (let p = start; p <= end; p++) {
+    const slot = byPeriod.get(p);
+    if (slot) block.push(slot);
+  }
+  return block;
+}
+
+/**
+ * Formats a lab block's period range (e.g. "P2–P3", "P1–P3", "P4").
+ */
+export function formatLabBlockPeriodRange(blockSlots: TTFixedPeriodSlot[]): string {
+  if (!blockSlots || blockSlots.length === 0) return '';
+  const sorted = [...blockSlots].sort((a, b) => a.period - b.period);
+  if (sorted.length === 1) return `P${sorted[0].period}`;
+  return `P${sorted[0].period}–P${sorted[sorted.length - 1].period}`;
+}
+
+/**
+ * Migrates & normalizes contiguous LAB blocks in a single class's slot list:
+ * Any contiguous LAB block (same Day Order, within [1,2,3] or [4,5]) shares the
+ * ordered union of all staff across cells in that block without losing any existing staff.
+ */
+export function mergeLabBlockStaffInSlots(
+  slots: TTFixedPeriodSlot[],
+  staffList?: TTStaff[]
+): { slots: TTFixedPeriodSlot[]; changed: boolean } {
+  if (!slots || slots.length === 0) return { slots: [], changed: false };
+
+  const cloned = slots.map((s) => {
+    const parsed = parseFixedSlotStaffIds(s, staffList);
+    const serialized = serializeFixedSlotStaffIds(parsed);
+    return {
+      ...s,
+      assigned_staff_id: serialized,
+      assigned_staff_ids: parsed,
+    };
+  });
+
+  let changed = false;
+
+  // Group LAB slots by day_order and check maximal contiguous runs inside [1,2,3] and [4,5]
+  const visited = new Set<string>();
+  for (const s of cloned) {
+    if (s.slot_type !== 'LAB') continue;
+    const coord = `${s.day_order}_${s.period}`;
+    if (visited.has(coord)) continue;
+
+    const block = getContiguousLabBlock(cloned, s.day_order, s.period);
+    for (const b of block) {
+      visited.add(`${b.day_order}_${b.period}`);
+    }
+
+    if (block.length <= 1) continue;
+
+    // Union staff across all cells in this contiguous LAB block
+    const mergedIds: string[] = [];
+    const seenKeys = new Set<string>();
+    for (const cell of block) {
+      const cellIds = parseFixedSlotStaffIds(cell, staffList);
+      for (const id of cellIds) {
+        const resolved = staffList && staffList.length > 0 ? matchTTStaffToken(staffList, id) : undefined;
+        const canonical = resolved ? resolved.id : id;
+        const dedupKey = (resolved ? resolved.short_code : id.replace(/^staff-/i, ''))
+          .trim()
+          .toUpperCase();
+        if (!seenKeys.has(dedupKey)) {
+          seenKeys.add(dedupKey);
+          mergedIds.push(canonical);
+        }
+      }
+    }
+
+    const mergedSerialized = serializeFixedSlotStaffIds(mergedIds);
+    for (const cell of block) {
+      const prevSerialized = cell.assigned_staff_id ?? null;
+      if (prevSerialized !== mergedSerialized) {
+        changed = true;
+      }
+      cell.assigned_staff_id = mergedSerialized;
+      cell.assigned_staff_ids = [...mergedIds];
+    }
+  }
+
+  return { slots: cloned, changed };
 }
 
 /**
@@ -53,7 +257,8 @@ export function resolveActiveClassId(rawClassKey: string, classes: TTClass[]): s
 }
 
 /**
- * Helper to look up fixed period slots for a specific classId (tolerant to ID vs code variants).
+ * Helper to look up fixed period slots for a specific classId (tolerant to ID vs code variants),
+ * guaranteeing contiguous LAB blocks are always merged.
  */
 export function getFixedSlotsForClass(
   fixedByClass: FixedPeriodsByClass,
@@ -62,7 +267,7 @@ export function getFixedSlotsForClass(
 ): TTFixedPeriodSlot[] {
   if (!fixedByClass || !classId) return [];
   if (Array.isArray(fixedByClass[classId])) {
-    return fixedByClass[classId];
+    return mergeLabBlockStaffInSlots(fixedByClass[classId]).slots;
   }
   const targetToken = normalizeClassToken(classId);
   const matchedClass = classes.find((c) => c.id === classId);
@@ -71,7 +276,7 @@ export function getFixedSlotsForClass(
   for (const [k, list] of Object.entries(fixedByClass)) {
     const kt = normalizeClassToken(k);
     if (kt === targetToken || kt === codeToken) {
-      return Array.isArray(list) ? list : [];
+      return Array.isArray(list) ? mergeLabBlockStaffInSlots(list).slots : [];
     }
   }
   return [];
@@ -166,12 +371,14 @@ export function buildDefaultFixedSlotsForClass(classObj: TTClass): TTFixedPeriod
 }
 
 /**
- * Re-keys a FixedPeriodsByClass dictionary so every entry's class_id uses active TTClass IDs.
+ * Re-keys a FixedPeriodsByClass dictionary so every entry's class_id uses active TTClass IDs,
+ * and migrates/merges any contiguous LAB cells so each block carries a unified staff list.
  */
 function normalizeFixedPeriodsMap(
   rawMap: Record<string, any[]>,
-  classes: TTClass[]
-): FixedPeriodsByClass {
+  classes: TTClass[],
+  staffList?: TTStaff[]
+): { normalized: FixedPeriodsByClass; migrated: boolean } {
   const normalized: FixedPeriodsByClass = {};
   for (const c of classes) {
     normalized[c.id] = [];
@@ -187,13 +394,21 @@ function normalizeFixedPeriodsMap(
       const existingIdx = normalized[activeCid].findIndex(
         (x) => x.day_order === Number(s.day_order) && x.period === Number(s.period)
       );
+      const parsedIds = parseFixedSlotStaffIds(
+        {
+          assigned_staff_id: s.assigned_staff_id ?? s.assignedStaffId ?? null,
+          assigned_staff_ids: s.assigned_staff_ids ?? s.assignedStaffIds,
+        },
+        staffList
+      );
       const cleanSlot: TTFixedPeriodSlot = {
         id: s.id,
         class_id: activeCid,
         day_order: Number(s.day_order),
         period: Number(s.period),
         slot_type: s.slot_type as FixedPeriodType,
-        assigned_staff_id: s.assigned_staff_id ?? s.assignedStaffId ?? null,
+        assigned_staff_id: serializeFixedSlotStaffIds(parsedIds),
+        assigned_staff_ids: parsedIds,
       };
       if (existingIdx >= 0) {
         normalized[activeCid][existingIdx] = cleanSlot;
@@ -203,19 +418,25 @@ function normalizeFixedPeriodsMap(
     }
   }
 
-  return normalized;
+  let migrated = false;
+  for (const cid of Object.keys(normalized)) {
+    const merged = mergeLabBlockStaffInSlots(normalized[cid], staffList);
+    normalized[cid] = merged.slots;
+    if (merged.changed) migrated = true;
+  }
+
+  return { normalized, migrated };
 }
 
 /**
  * Loads all Step 0 fixed periods from Supabase + local persistent memory.
- * On first run (or before Step 0 was ever initialized), automatically migrates any
- * legacy `is_fixed` workload rows / `tt_fixed_slots` entries and seeds AMJC defaults.
+ * Automatically migrates existing single-cell LAB staff into unified contiguous Lab Blocks.
  */
 export async function getAllFixedPeriods(
   classes: TTClass[],
-  workloadByClass?: Record<string, TTWorkload[]>
+  workloadByClass?: Record<string, TTWorkload[]>,
+  staffList?: TTStaff[]
 ): Promise<FixedPeriodsByClass> {
-  // 1. Try loading from Supabase `tt_fixed_periods`
   let dbRows: TTFixedPeriodSlot[] | null = null;
   try {
     const { data, error } = await supabase.from('tt_fixed_periods').select('*');
@@ -231,21 +452,28 @@ export async function getAllFixedPeriods(
   const localInitialized = isFixedPeriodsInitialized();
   const localMem = loadFixedPeriodsMemory();
 
-  // If DB already has rows and local wasn't customized yet, use DB rows
+  // If DB already has rows and local wasn't customized yet, use DB rows (with lab block migration)
   if (dbRows && dbRows.length > 0 && !localInitialized) {
     const grouped: Record<string, TTFixedPeriodSlot[]> = {};
     for (const row of dbRows) {
       if (!grouped[row.class_id]) grouped[row.class_id] = [];
       grouped[row.class_id].push(row);
     }
-    const normalized = normalizeFixedPeriodsMap(grouped, classes);
+    const { normalized, migrated } = normalizeFixedPeriodsMap(grouped, classes, staffList);
     saveFixedPeriodsMemory(normalized);
+    if (migrated) {
+      void persistFixedPeriodSlotsToSupabase(Object.values(normalized).flat());
+    }
     return normalized;
   }
 
   // If local was initialized, prefer local (and merge DB if local is empty while DB has rows)
   if (localInitialized) {
-    const normalizedLocal = normalizeFixedPeriodsMap(localMem, classes);
+    const { normalized: normalizedLocal, migrated: localMigrated } = normalizeFixedPeriodsMap(
+      localMem,
+      classes,
+      staffList
+    );
     const totalLocal = Object.values(normalizedLocal).reduce((sum, arr) => sum + arr.length, 0);
     if (totalLocal === 0 && dbRows && dbRows.length > 0) {
       const grouped: Record<string, TTFixedPeriodSlot[]> = {};
@@ -253,12 +481,22 @@ export async function getAllFixedPeriods(
         if (!grouped[row.class_id]) grouped[row.class_id] = [];
         grouped[row.class_id].push(row);
       }
-      const normalizedDb = normalizeFixedPeriodsMap(grouped, classes);
+      const { normalized: normalizedDb, migrated: dbMigrated } = normalizeFixedPeriodsMap(
+        grouped,
+        classes,
+        staffList
+      );
       saveFixedPeriodsMemory(normalizedDb);
+      if (dbMigrated) {
+        void persistFixedPeriodSlotsToSupabase(Object.values(normalizedDb).flat());
+      }
       return normalizedDb;
     }
-    // Re-save if class IDs changed (e.g. switched between offline IDs and DB UUIDs)
+
     saveFixedPeriodsMemory(normalizedLocal);
+    if (localMigrated) {
+      void persistFixedPeriodSlotsToSupabase(Object.values(normalizedLocal).flat());
+    }
     return normalizedLocal;
   }
 
@@ -322,8 +560,15 @@ export async function getAllFixedPeriods(
 
   saveFixedPeriodsMemory(initialMap);
 
-  // Best-effort seed into Supabase `tt_fixed_periods` if table exists
-  const allRowsToInsert = Object.values(initialMap).flat();
+  const allRowsToInsert = Object.values(initialMap)
+    .flat()
+    .map((s) => ({
+      class_id: s.class_id,
+      day_order: s.day_order,
+      period: s.period,
+      slot_type: s.slot_type,
+      assigned_staff_id: s.assigned_staff_id ?? null,
+    }));
   if (allRowsToInsert.length > 0) {
     try {
       await supabase
@@ -338,8 +583,9 @@ export async function getAllFixedPeriods(
 }
 
 /**
- * Updates a single (classId, dayOrder, period) cell immediately in state + local memory
- * and persists to Supabase `tt_fixed_periods` asynchronously.
+ * Updates a single (classId, dayOrder, period) cell immediately in state + local memory.
+ * When adding a LAB cell adjacent to an existing LAB cell (same segment [1,2,3] or [4,5]),
+ * merges the contiguous block's staff across all cells of that block automatically.
  */
 export function computeNextFixedPeriodsMap(
   currentMap: FixedPeriodsByClass,
@@ -347,7 +593,8 @@ export function computeNextFixedPeriodsMap(
   dayOrder: number,
   period: number,
   slotType: FixedPeriodType | null,
-  assignedStaffId?: string | null
+  assignedStaffId?: string | null,
+  assignedStaffIds?: string[]
 ): FixedPeriodsByClass {
   const existingList = Array.isArray(currentMap[classId]) ? currentMap[classId] : [];
   const prevSlot = existingList.find(
@@ -357,10 +604,16 @@ export function computeNextFixedPeriodsMap(
     (s) => !(s.day_order === dayOrder && s.period === period)
   );
 
-  const resolvedStaffId =
-    assignedStaffId !== undefined ? assignedStaffId : (prevSlot?.assigned_staff_id ?? null);
+  let resolvedIds: string[] = [];
+  if (assignedStaffIds !== undefined) {
+    resolvedIds = parseFixedSlotStaffIds({ assigned_staff_ids: assignedStaffIds });
+  } else if (assignedStaffId !== undefined) {
+    resolvedIds = parseFixedSlotStaffIds({ assigned_staff_id: assignedStaffId });
+  } else if (prevSlot && prevSlot.slot_type === slotType) {
+    resolvedIds = parseFixedSlotStaffIds(prevSlot);
+  }
 
-  const nextList =
+  const rawNextList: TTFixedPeriodSlot[] =
     slotType === null
       ? filtered
       : [
@@ -370,9 +623,56 @@ export function computeNextFixedPeriodsMap(
             day_order: dayOrder,
             period,
             slot_type: slotType,
-            assigned_staff_id: resolvedStaffId,
+            assigned_staff_id: serializeFixedSlotStaffIds(resolvedIds),
+            assigned_staff_ids: resolvedIds,
           },
         ];
+
+  const { slots: mergedNextList } = mergeLabBlockStaffInSlots(rawNextList);
+
+  const nextMap: FixedPeriodsByClass = {
+    ...currentMap,
+    [classId]: mergedNextList,
+  };
+
+  saveFixedPeriodsMemory(nextMap);
+  return nextMap;
+}
+
+/**
+ * Sets the optional multi-staff list for an entire contiguous LAB block
+ * containing (dayOrder, period), persisting immediately to local memory.
+ */
+export function computeNextLabBlockStaffMap(
+  currentMap: FixedPeriodsByClass,
+  classId: string,
+  dayOrder: number,
+  period: number,
+  staffIds: string[]
+): { nextMap: FixedPeriodsByClass; updatedBlockSlots: TTFixedPeriodSlot[] } {
+  const existingList = Array.isArray(currentMap[classId]) ? currentMap[classId] : [];
+  const block = getContiguousLabBlock(existingList, dayOrder, period);
+  const blockCoordSet = new Set(block.map((b) => `${b.day_order}_${b.period}`));
+  if (blockCoordSet.size === 0) {
+    blockCoordSet.add(`${dayOrder}_${period}`);
+  }
+
+  const cleanIds = parseFixedSlotStaffIds({ assigned_staff_ids: staffIds });
+  const serialized = serializeFixedSlotStaffIds(cleanIds);
+  const updatedBlockSlots: TTFixedPeriodSlot[] = [];
+
+  const nextList = existingList.map((s) => {
+    if (blockCoordSet.has(`${s.day_order}_${s.period}`)) {
+      const updated: TTFixedPeriodSlot = {
+        ...s,
+        assigned_staff_id: serialized,
+        assigned_staff_ids: [...cleanIds],
+      };
+      updatedBlockSlots.push(updated);
+      return updated;
+    }
+    return s;
+  });
 
   const nextMap: FixedPeriodsByClass = {
     ...currentMap,
@@ -380,7 +680,72 @@ export function computeNextFixedPeriodsMap(
   };
 
   saveFixedPeriodsMemory(nextMap);
-  return nextMap;
+  return { nextMap, updatedBlockSlots };
+}
+
+/**
+ * Synchronizes updated Step 0 LAB block staff into any already-generated
+ * `LAB` entries in `memoryStorage.timetableEntries` so Daily Log Sheet and
+ * Faculty Workload stay aligned immediately.
+ */
+export function syncStep0LabStaffToTimetableEntries(
+  classId: string,
+  classCode: string,
+  slotsToSync: TTFixedPeriodSlot[],
+  ttStaff: TTStaff[]
+): void {
+  if (typeof window === 'undefined' || slotsToSync.length === 0) return;
+
+  const mem = loadMemoryData();
+  const entries = mem.timetableEntries;
+  if (!Array.isArray(entries) || entries.length === 0) return;
+
+  const normTargetClass = normalizeClassToken(classCode || classId);
+  const memStaff = mem.staffList || [];
+
+  const resolveLogStaffIds = (slot: TTFixedPeriodSlot): string[] => {
+    const rawIds = parseFixedSlotStaffIds(slot, ttStaff);
+    return rawIds.map((rawId) => {
+      const ttMatch = matchTTStaffToken(ttStaff, rawId);
+      const code = (ttMatch?.short_code || rawId.replace(/^staff-/i, '')).trim().toUpperCase();
+      const memMatch = memStaff.find(
+        (m) =>
+          m.id === rawId ||
+          m.code.trim().toUpperCase() === code ||
+          m.id.toUpperCase() === `STAFF-${code}`
+      );
+      return memMatch?.id ?? ttMatch?.id ?? rawId;
+    });
+  };
+
+  let changed = false;
+  const updatedEntries = entries.map((entry) => {
+    if (entry.subjectCode.trim().toUpperCase() !== 'LAB') return entry;
+    const entryNormClass = normalizeClassToken(entry.classId);
+    if (entry.classId !== classId && entryNormClass !== normTargetClass) return entry;
+
+    const matchingSlot = slotsToSync.find(
+      (s) => s.slot_type === 'LAB' && s.day_order === entry.dayOrder && s.period === entry.period
+    );
+    if (!matchingSlot) return entry;
+
+    const nextStaffIds = resolveLogStaffIds(matchingSlot);
+    const prevKey = (entry.staffIds || []).join(',');
+    const nextKey = nextStaffIds.join(',');
+    if (prevKey === nextKey) return entry;
+
+    changed = true;
+    return {
+      ...entry,
+      isLab: true,
+      staffIds: nextStaffIds,
+    };
+  });
+
+  if (changed) {
+    saveMemoryData({ timetableEntries: updatedEntries });
+    window.dispatchEvent(new CustomEvent('accfin-timetable-updated', { detail: updatedEntries }));
+  }
 }
 
 function isMissingColumnError(err: any): boolean {
@@ -433,6 +798,40 @@ export async function persistFixedPeriodCellToSupabase(
   }
 }
 
+export async function persistFixedPeriodSlotsToSupabase(
+  slots: TTFixedPeriodSlot[]
+): Promise<void> {
+  if (!slots || slots.length === 0) return;
+  try {
+    const payload = slots.map((s) => ({
+      class_id: s.class_id,
+      day_order: s.day_order,
+      period: s.period,
+      slot_type: s.slot_type,
+      assigned_staff_id: s.assigned_staff_id ?? serializeFixedSlotStaffIds(s.assigned_staff_ids || []),
+    }));
+    const { error } = await supabase
+      .from('tt_fixed_periods')
+      .upsert(payload, { onConflict: 'class_id,day_order,period' });
+
+    if (error && isMissingColumnError(error)) {
+      const legacyPayload = slots.map((s) => ({
+        class_id: s.class_id,
+        day_order: s.day_order,
+        period: s.period,
+        slot_type: s.slot_type,
+      }));
+      await supabase
+        .from('tt_fixed_periods')
+        .upsert(legacyPayload, { onConflict: 'class_id,day_order,period' });
+    }
+  } catch (err) {
+    if (!isExpectedSupabaseFallbackError(err)) {
+      console.warn('Supabase fixed period slots sync notice:', err);
+    }
+  }
+}
+
 export async function persistFixedPeriodsForClassToSupabase(
   classId: string,
   slots: TTFixedPeriodSlot[]
@@ -449,7 +848,7 @@ export async function persistFixedPeriodsForClassToSupabase(
         day_order: s.day_order,
         period: s.period,
         slot_type: s.slot_type,
-        assigned_staff_id: s.assigned_staff_id ?? null,
+        assigned_staff_id: s.assigned_staff_id ?? serializeFixedSlotStaffIds(s.assigned_staff_ids || []),
       }));
       const { error: upsertErr } = await supabase
         .from('tt_fixed_periods')

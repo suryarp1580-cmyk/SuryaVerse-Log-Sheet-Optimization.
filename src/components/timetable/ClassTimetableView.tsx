@@ -125,10 +125,14 @@ export default function ClassTimetableView({ initialData, classes = [], staff = 
         renderCellContent={(key) => {
           const cell = data.cells[key];
           if (!cell) return data.unresolved.length > 0 ? <span className="text-[#C9BEA4] text-xs no-print">+ Add</span> : null;
+          const isStep0LabWithStaff =
+            cell.isFixed &&
+            cell.subjectCode.trim().toUpperCase() === 'LAB' &&
+            Boolean(cell.staffShortCode && cell.staffShortCode !== 'FIXED' && cell.staffShortCode !== '?');
           return (
             <div className={cell.isFixed ? 'bg-[#F6EFD6]/70 rounded-xs py-0.5 px-1' : undefined}>
               <div className={`font-medium tracking-wide ${cell.isFixed ? 'text-[#3A0D0D]' : 'text-[#201A17]'}`}>
-                {cell.subjectCode}
+                {isStep0LabWithStaff ? `${cell.subjectCode} (${cell.staffShortCode})` : cell.subjectCode}
               </div>
               <div className="text-[11px] text-[#8A806D]">
                 {cell.isFixed ? 'FIXED (Step 0)' : cell.staffShortCode}

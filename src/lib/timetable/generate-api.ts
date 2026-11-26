@@ -12,7 +12,7 @@ import {
   type SchedulableWorkload,
 } from './scheduler';
 import type { TTStaff, TTClass, TTWorkload } from './types';
-import { resolveWorkloadStaff, rederiveTimetableEntries, findTTStaff } from '../staffUtils';
+import { resolveWorkloadStaff, rederiveTimetableEntries, findTTStaff, findStaffMember } from '../staffUtils';
 import { DAY_ORDER_LABELS } from './constants';
 import {
   saveMemoryData,
@@ -23,6 +23,7 @@ import {
 } from '../memoryStorage';
 import {
   getAllFixedPeriods,
+  parseFixedSlotStaffIds,
   resolveActiveClassId,
 } from './fixed-periods-api';
 import { initialClasses, initialStaff } from '../../data/seedData';
@@ -129,7 +130,7 @@ export async function runGenerateSchedule(): Promise<GenerateRunSummary> {
   }
 
   // Load Step 0 Fixed Periods (LANG, ENG, LAB)
-  const fixedPeriodsByClass = await getAllFixedPeriods(classes, normalizedWorkloadMap);
+  const fixedPeriodsByClass = await getAllFixedPeriods(classes, normalizedWorkloadMap, staff);
   const blockedSlots: BlockedClassSlot[] = [];
   const fixedCoordSetByClass = new Map<string, Set<string>>();
 
@@ -137,17 +138,16 @@ export async function runGenerateSchedule(): Promise<GenerateRunSummary> {
     const slots = fixedPeriodsByClass[c.id] ?? [];
     const coordSet = new Set<string>();
     for (const s of slots) {
-      const resolvedAssigned = s.assigned_staff_id
-        ? findTTStaff(staff, s.assigned_staff_id)
-        : undefined;
-      const assignedStaffId = resolvedAssigned?.id ?? (s.assigned_staff_id || null);
+      const rawStaffIds = parseFixedSlotStaffIds(s, staff);
+      const assignedStaffIds = rawStaffIds.map((id) => findTTStaff(staff, id)?.id ?? id);
 
       blockedSlots.push({
         classId: c.id,
         dayOrder: s.day_order,
         period: s.period,
         slotType: s.slot_type,
-        assignedStaffId,
+        assignedStaffId: assignedStaffIds[0] ?? null,
+        assignedStaffIds,
       });
       coordSet.add(`${s.day_order}_${s.period}`);
     }
@@ -265,9 +265,27 @@ export async function runGenerateSchedule(): Promise<GenerateRunSummary> {
     );
   }
 
+  const resolveLogStaffIds = (ids: string[] | undefined, staffListForLog: typeof initialStaff): string[] => {
+    if (!ids || ids.length === 0) return [];
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const sid of ids) {
+      const st = staffById.get(sid) ?? findTTStaff(staff, sid);
+      const matched = findStaffMember(staffListForLog, st?.short_code || sid);
+      const finalId = matched?.id ?? sid;
+      if (finalId && !seen.has(finalId)) {
+        seen.add(finalId);
+        out.push(finalId);
+      }
+    }
+    return out;
+  };
+
   // If workload is empty, fallback to canonical ACCFIN rederivation + overlay Step 0 fixed slots
   if (schedulableWorkload.length === 0 && fixedPlacements.length === 0) {
-    const rederivedEntries = rederiveTimetableEntries(initialClasses, initialStaff);
+    const memory = loadMemoryData();
+    const staffListForLog = memory.staffList && memory.staffList.length > 0 ? memory.staffList : initialStaff;
+    const rederivedEntries = rederiveTimetableEntries(initialClasses, staffListForLog);
 
     // Overlay Step 0 fixed slots onto rederived entries
     for (const b of blockedSlots) {
@@ -287,6 +305,8 @@ export async function runGenerateSchedule(): Promise<GenerateRunSummary> {
           e.id === entryId ||
           (e.classId === targetClass.id && e.dayOrder === b.dayOrder && e.period === b.period)
       );
+      const resolvedLabStaffIds =
+        b.slotType === 'LAB' ? resolveLogStaffIds(b.assignedStaffIds, staffListForLog) : [];
       const fixedEntry: TimetableEntry = {
         id: entryId,
         classId: targetClass.id,
@@ -295,7 +315,7 @@ export async function runGenerateSchedule(): Promise<GenerateRunSummary> {
         subjectCode: b.slotType,
         isLab: b.slotType === 'LAB',
         excludedFromSubstitution: b.slotType === 'LANG' || b.slotType === 'ENG',
-        staffIds: idx >= 0 && b.slotType === 'LAB' ? rederivedEntries[idx].staffIds : [],
+        staffIds: resolvedLabStaffIds,
       };
       if (idx >= 0) rederivedEntries[idx] = fixedEntry;
       else rederivedEntries.push(fixedEntry);
@@ -391,6 +411,7 @@ export async function runGenerateSchedule(): Promise<GenerateRunSummary> {
     };
 
     // 1. Write Step 0 fixed slots (LANG, ENG, LAB)
+    const staffListForLog = memory.staffList && memory.staffList.length > 0 ? memory.staffList : initialStaff;
     for (const b of blockedSlots) {
       const targetCid = resolveTargetSeedClassId(b.classId);
       const entryId = `entry-${targetCid}-${b.dayOrder}-${b.period}`;
@@ -400,6 +421,9 @@ export async function runGenerateSchedule(): Promise<GenerateRunSummary> {
           (e.classId === targetCid && e.dayOrder === b.dayOrder && e.period === b.period)
       );
 
+      const resolvedLabStaffIds =
+        b.slotType === 'LAB' ? resolveLogStaffIds(b.assignedStaffIds, staffListForLog) : [];
+
       const newEntry: TimetableEntry = {
         id: entryId,
         classId: targetCid,
@@ -408,7 +432,7 @@ export async function runGenerateSchedule(): Promise<GenerateRunSummary> {
         subjectCode: b.slotType,
         isLab: b.slotType === 'LAB',
         excludedFromSubstitution: b.slotType === 'LANG' || b.slotType === 'ENG',
-        staffIds: entryIdx >= 0 && b.slotType === 'LAB' ? updatedEntries[entryIdx].staffIds : [],
+        staffIds: resolvedLabStaffIds,
       };
 
       if (entryIdx >= 0) updatedEntries[entryIdx] = newEntry;
