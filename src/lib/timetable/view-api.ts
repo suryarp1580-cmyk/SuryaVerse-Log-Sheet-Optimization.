@@ -379,7 +379,8 @@ export async function getClassTimetable(classId: string, forceLive = false): Pro
               subjectCode: w.subject_code,
               subjectName: w.subject_name,
               hoursPerWeek: w.hours_per_week,
-              staffName: w.staff?.full_name ?? 'Unknown',
+              staffName:
+                w.staff?.full_name ?? findTTStaff(staffList, w.staff_id)?.full_name ?? 'Unknown',
             }));
 
             const fixedSlots = await fetchFixedPeriodsForClass(classId, classRow.code, staffList);
@@ -490,7 +491,7 @@ export async function getClassTimetable(classId: string, forceLive = false): Pro
         subjectCode: w.subject_code,
         subjectName: w.subject_name,
         hoursPerWeek: w.hours_per_week,
-        staffName: w.staff?.full_name ?? 'Unknown',
+        staffName: w.staff?.full_name ?? findTTStaff(staffList, w.staff_id)?.full_name ?? 'Unknown',
       }));
 
       const fixedSlots = await fetchFixedPeriodsForClass(classId, classRow.code, staffList);
@@ -564,7 +565,7 @@ export async function getClassTimetable(classId: string, forceLive = false): Pro
     subjectCode: w.subject_code,
     subjectName: w.subject_name,
     hoursPerWeek: w.hours_per_week,
-    staffName: w.staff?.full_name ?? 'Unknown',
+    staffName: w.staff?.full_name ?? findTTStaff(fallbackStaff, w.staff_id)?.full_name ?? 'Unknown',
   }));
 
   const fixedSlots = await fetchFixedPeriodsForClass(classId, resolvedClassCode, fallbackStaff);
@@ -579,6 +580,14 @@ export async function getClassTimetable(classId: string, forceLive = false): Pro
   );
 
   return { classId, classDisplayName: resolvedClassDisplayName, cells, unresolved, legend };
+}
+
+export async function getAllClassTimetables(
+  classes: TTClass[],
+  forceLive = false
+): Promise<ClassTimetableData[]> {
+  const sorted = [...classes].sort((a, b) => a.sort_order - b.sort_order);
+  return Promise.all(sorted.map((cls) => getClassTimetable(cls.id, forceLive)));
 }
 
 export async function getStaffTimetable(staffId: string, forceLive = false): Promise<StaffTimetableData> {

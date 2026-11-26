@@ -1,6 +1,11 @@
 import React from 'react';
 import { DAY_ORDERS, DAY_ORDER_LABELS, PERIOD_TIMES } from '../../lib/timetable/constants';
-import type { ClassTimetableData, StaffTimetableData } from '../../lib/timetable/grid-types';
+import type {
+  ClassTimetableData,
+  DayOrderTimetableData,
+  GridCell,
+  StaffTimetableData,
+} from '../../lib/timetable/grid-types';
 
 export const COLLEGE_LOGO_URL =
   'https://res.cloudinary.com/oomxhs6j/image/upload/v1785820183/b66af0ec-b48c-4ba3-b1a7-35452df00cdd.png';
@@ -49,6 +54,31 @@ function isLabOrSecCell(subjectCode: string): boolean {
 function isPlainFixedLanguageCell(subjectCode: string): boolean {
   const upper = stripSplitSuffix(subjectCode).toUpperCase();
   return upper === 'LANG' || upper === 'ENG' || upper === 'TAM';
+}
+
+export function formatDayOrderCellLabel(cell: GridCell | null | undefined): string {
+  if (!cell) return '';
+  const baseSubj = stripSplitSuffix(cell.subjectCode);
+  if (!baseSubj) return '';
+
+  if (isPlainFixedLanguageCell(baseSubj)) {
+    return baseSubj;
+  }
+
+  const cleanStaff =
+    cell.staffShortCode && cell.staffShortCode !== 'FIXED' && cell.staffShortCode !== '?'
+      ? cell.staffShortCode.trim()
+      : '';
+
+  if (baseSubj.toUpperCase() === 'LAB') {
+    return cleanStaff ? `LAB (${cleanStaff})` : 'LAB';
+  }
+
+  if (baseSubj.toUpperCase() === 'SEC') {
+    return cleanStaff ? `SEC-${cleanStaff}` : 'SEC';
+  }
+
+  return cleanStaff ? `${baseSubj}-${cleanStaff}` : baseSubj;
 }
 
 export function formatShortYearSection(rawClassText: string): string {
@@ -628,7 +658,7 @@ export function StaffTimetablePdfPage({
         <div style={{ fontSize: '13.5px' }}>DEPARTMENT OF ACCOUNTING &amp; FINANCE</div>
         <div style={{ fontSize: '13.5px' }}>INDIVIDUAL STAFF TIME TABLE</div>
         <div style={{ fontSize: '12px' }}>
-          ACADEMIC YEAR 2026-2027 - JUNE 2026 (ODD SEMESTER)
+          ACADEMIC YEAR 2026–2027 (EVEN SEMESTER DECEMBER 2026 – APRIL 2027)
         </div>
       </div>
 
@@ -1033,6 +1063,638 @@ export function StaffTimetablePdfPage({
           textAlign: 'right',
           fontFamily: SERIF_FONT,
           fontSize: '12px',
+          fontWeight: 700,
+          color: '#000000',
+          paddingRight: '8px',
+        }}
+      >
+        FACILITATOR
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Class Time Table Page 2: Subject Legend (A4 Portrait)
+// ============================================================================
+export function ClassLegendPdfPage({
+  data,
+  meta,
+  logoSrc,
+}: {
+  data: ClassTimetableData;
+  meta: ClassPdfMetadata;
+  logoSrc: string;
+}) {
+  const totalHours = data.legend.reduce((sum, l) => sum + (l.hoursPerWeek || 0), 0);
+  const thinBorder = '1px solid #C8BFA8';
+  const compactRows = data.legend.length > 11;
+
+  return (
+    <div
+      className="pdf-sheet-page"
+      style={{
+        ...EXACT_COLOR_STYLE,
+        width: '794px',
+        backgroundColor: COLORS.white,
+        color: '#000000',
+        padding: '26px 32px 24px 32px',
+        boxSizing: 'border-box',
+        fontFamily: SERIF_FONT,
+        pageBreakAfter: 'always',
+        breakInside: 'avoid',
+      }}
+    >
+      <CollegeBannerHeader logoSrc={logoSrc} />
+
+      {/* Centered Bold Title Block — identical to Page 1 */}
+      <div
+        style={{
+          textAlign: 'center',
+          fontFamily: SERIF_FONT,
+          fontWeight: 700,
+          color: '#000000',
+          marginTop: '10px',
+          marginBottom: '14px',
+          lineHeight: 1.4,
+        }}
+      >
+        <div style={{ fontSize: '14px' }}>DEPARTMENT OF ACCOUNTING &amp; FINANCE</div>
+        <div style={{ fontSize: '14px' }}>CLASS TIME TABLE</div>
+        <div style={{ fontSize: '12.5px' }}>
+          ACADEMIC YEAR 2026–2027 (EVEN SEMESTER DECEMBER 2026 – APRIL 2027)
+        </div>
+      </div>
+
+      {/* Mauve Class Header Bar — identical to Page 1 */}
+      <table
+        style={{
+          width: '100%',
+          borderCollapse: 'collapse',
+          tableLayout: 'fixed',
+          fontFamily: SERIF_FONT,
+          border: CELL_BORDER,
+          marginBottom: '14px',
+        }}
+      >
+        <tbody>
+          <tr>
+            <td
+              style={{
+                ...EXACT_COLOR_STYLE,
+                backgroundColor: COLORS.mauveBar,
+                border: CELL_BORDER,
+                padding: '9px 12px',
+                fontSize: '12px',
+                fontWeight: 700,
+                color: '#000000',
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  width: '100%',
+                }}
+              >
+                <span>CLASS: {meta.yearLabel}</span>
+                <span>SECTION: {meta.section}</span>
+                <span>ROOM NO: {meta.roomNo || '—'}</span>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      {/* Subject Legend Section Heading */}
+      <div
+        style={{
+          fontFamily: SANS_FONT,
+          fontSize: '13.5px',
+          fontWeight: 600,
+          color: '#4A4038',
+          marginBottom: '8px',
+        }}
+      >
+        Subject legend
+      </div>
+
+      {/* Subject Legend Table matching on-screen Subject legend */}
+      <table
+        style={{
+          width: '100%',
+          borderCollapse: 'collapse',
+          tableLayout: 'fixed',
+          fontFamily: SANS_FONT,
+          border: thinBorder,
+        }}
+      >
+        <colgroup>
+          <col style={{ width: '19%' }} />
+          <col style={{ width: '69%' }} />
+          <col style={{ width: '12%' }} />
+        </colgroup>
+        <thead>
+          <tr
+            style={{
+              ...EXACT_COLOR_STYLE,
+              backgroundColor: '#F6EFD6',
+            }}
+          >
+            <th
+              style={{
+                ...EXACT_COLOR_STYLE,
+                backgroundColor: '#F6EFD6',
+                border: thinBorder,
+                padding: compactRows ? '7px 12px' : '9px 14px',
+                fontSize: '12px',
+                fontWeight: 700,
+                color: '#4A4038',
+                textAlign: 'left',
+              }}
+            >
+              Code
+            </th>
+            <th
+              style={{
+                ...EXACT_COLOR_STYLE,
+                backgroundColor: '#F6EFD6',
+                border: thinBorder,
+                padding: compactRows ? '7px 12px' : '9px 14px',
+                fontSize: '12px',
+                fontWeight: 700,
+                color: '#4A4038',
+                textAlign: 'left',
+              }}
+            >
+              Subject Name
+            </th>
+            <th
+              style={{
+                ...EXACT_COLOR_STYLE,
+                backgroundColor: '#F6EFD6',
+                border: thinBorder,
+                padding: compactRows ? '7px 12px' : '9px 14px',
+                fontSize: '12px',
+                fontWeight: 700,
+                color: '#4A4038',
+                textAlign: 'left',
+              }}
+            >
+              Hours
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.legend.map((l, idx) => (
+            <tr key={idx}>
+              <td
+                style={{
+                  ...EXACT_COLOR_STYLE,
+                  backgroundColor: COLORS.white,
+                  border: thinBorder,
+                  padding: compactRows ? '6.5px 12px' : '8.5px 14px',
+                  fontSize: compactRows ? '11.5px' : '12px',
+                  fontWeight: 600,
+                  color: '#201A17',
+                  letterSpacing: '0.02em',
+                  verticalAlign: 'middle',
+                }}
+              >
+                {l.subjectCode}
+              </td>
+              <td
+                style={{
+                  ...EXACT_COLOR_STYLE,
+                  backgroundColor: COLORS.white,
+                  border: thinBorder,
+                  padding: compactRows ? '6.5px 12px' : '8.5px 14px',
+                  fontSize: compactRows ? '11.5px' : '12px',
+                  fontWeight: 400,
+                  color: '#201A17',
+                  verticalAlign: 'middle',
+                }}
+              >
+                <span>{l.subjectName}</span>{' '}
+                <span style={{ color: '#9C917A' }}>({l.staffName})</span>
+              </td>
+              <td
+                style={{
+                  ...EXACT_COLOR_STYLE,
+                  backgroundColor: COLORS.white,
+                  border: thinBorder,
+                  padding: compactRows ? '6.5px 12px' : '8.5px 14px',
+                  fontSize: compactRows ? '11.5px' : '12px',
+                  fontWeight: 400,
+                  color: '#201A17',
+                  verticalAlign: 'middle',
+                }}
+              >
+                {l.hoursPerWeek}
+              </td>
+            </tr>
+          ))}
+          <tr>
+            <td
+              colSpan={2}
+              style={{
+                ...EXACT_COLOR_STYLE,
+                backgroundColor: '#FAF7F1',
+                border: thinBorder,
+                padding: compactRows ? '7px 12px' : '9px 14px',
+                fontSize: '12px',
+                fontWeight: 700,
+                color: '#201A17',
+                textAlign: 'left',
+              }}
+            >
+              Total Hours
+            </td>
+            <td
+              style={{
+                ...EXACT_COLOR_STYLE,
+                backgroundColor: '#FAF7F1',
+                border: thinBorder,
+                padding: compactRows ? '7px 12px' : '9px 14px',
+                fontSize: '12px',
+                fontWeight: 700,
+                color: '#201A17',
+                textAlign: 'left',
+              }}
+            >
+              {totalHours}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      {/* Bottom Right Bold FACILITATOR */}
+      <div
+        style={{
+          marginTop: compactRows ? '28px' : '44px',
+          textAlign: 'right',
+          fontFamily: SERIF_FONT,
+          fontSize: '12.5px',
+          fontWeight: 700,
+          color: '#000000',
+          paddingRight: '8px',
+        }}
+      >
+        FACILITATOR
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Day Order Wise Daily Log Sheet PDF Template (A4 Landscape — 1 page per Day Order)
+// ============================================================================
+export function DayOrderPdfPage({
+  data,
+  logoSrc,
+}: {
+  data: DayOrderTimetableData;
+  logoSrc: string;
+}) {
+  const periodColumns = PERIOD_TIMES;
+  const dayRoman = DAY_ORDER_LABELS[data.dayOrder] || String(data.dayOrder);
+  const headerGrey = '#D9D9D9';
+  const classColGrey = '#E6E6E6';
+  const rows = data.rows ?? [];
+
+  return (
+    <div
+      className="pdf-sheet-page"
+      style={{
+        ...EXACT_COLOR_STYLE,
+        width: '1123px',
+        backgroundColor: COLORS.white,
+        color: '#000000',
+        padding: '16px 26px 14px 26px',
+        boxSizing: 'border-box',
+        fontFamily: SERIF_FONT,
+        pageBreakAfter: 'always',
+        breakInside: 'avoid',
+      }}
+    >
+      <CollegeBannerHeader logoSrc={logoSrc} />
+
+      {/* Centered Bold Title Block */}
+      <div
+        style={{
+          textAlign: 'center',
+          fontFamily: SERIF_FONT,
+          fontWeight: 700,
+          color: '#000000',
+          marginTop: '4px',
+          marginBottom: '6px',
+          lineHeight: 1.3,
+        }}
+      >
+        <div style={{ fontSize: '12.5px' }}>DEPARTMENT OF ACCOUNTING &amp; FINANCE</div>
+        <div style={{ fontSize: '12px' }}>ACADEMIC YEAR 2026-2027 ODD SEMESTER</div>
+        <div style={{ fontSize: '13px', marginTop: '1px' }}>DAILY LOG SHEET</div>
+      </div>
+
+      {/* Meta Line: DATE (blank) | DAY (blank) | DAY ORDER (filled) */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          fontFamily: SERIF_FONT,
+          fontSize: '11.5px',
+          fontWeight: 700,
+          color: '#000000',
+          marginBottom: '6px',
+          padding: '0 4px',
+        }}
+      >
+        <span>DATE: ________________________</span>
+        <span>DAY: ________________________</span>
+        <span>DAY ORDER: {dayRoman}</span>
+      </div>
+
+      {/* Main 11-Class Day Order Grid */}
+      <table
+        style={{
+          width: '100%',
+          borderCollapse: 'collapse',
+          tableLayout: 'fixed',
+          fontFamily: SERIF_FONT,
+          border: CELL_BORDER,
+        }}
+      >
+        <colgroup>
+          <col style={{ width: '14%' }} />
+          <col style={{ width: '14%' }} />
+          <col style={{ width: '14%' }} />
+          <col style={{ width: '14%' }} />
+          <col style={{ width: '6%' }} />
+          <col style={{ width: '14%' }} />
+          <col style={{ width: '14%' }} />
+          <col style={{ width: '10%' }} />
+        </colgroup>
+        <thead>
+          <tr>
+            <th
+              style={{
+                ...EXACT_COLOR_STYLE,
+                backgroundColor: headerGrey,
+                border: CELL_BORDER,
+                padding: '5px 4px',
+                fontSize: '10.5px',
+                fontWeight: 700,
+                color: '#000000',
+                textAlign: 'center',
+              }}
+            >
+              CLASS
+            </th>
+            {periodColumns.map((pt) =>
+              pt.period === 'BREAK' ? (
+                <th
+                  key="brk-hdr"
+                  style={{
+                    ...EXACT_COLOR_STYLE,
+                    backgroundColor: headerGrey,
+                    border: CELL_BORDER,
+                    padding: '4px 2px',
+                    fontSize: '8.5px',
+                    fontWeight: 700,
+                    color: '#000000',
+                    textAlign: 'center',
+                    lineHeight: 1.2,
+                  }}
+                >
+                  <div>BREAK</div>
+                  <div>11:00-11:30</div>
+                </th>
+              ) : (
+                <th
+                  key={`p-hdr-${pt.period}`}
+                  style={{
+                    ...EXACT_COLOR_STYLE,
+                    backgroundColor: headerGrey,
+                    border: CELL_BORDER,
+                    padding: '4px 3px',
+                    fontSize: '10px',
+                    fontWeight: 700,
+                    color: '#000000',
+                    textAlign: 'center',
+                    lineHeight: 1.2,
+                  }}
+                >
+                  <div>PERIOD {pt.period}</div>
+                  <div style={{ fontSize: '8.5px', fontWeight: 700 }}>
+                    {pt.label.replace('–', 'TO').replace(/\s+TO\s+/, ' TO ')}
+                  </div>
+                </th>
+              )
+            )}
+            <th
+              style={{
+                ...EXACT_COLOR_STYLE,
+                backgroundColor: headerGrey,
+                border: CELL_BORDER,
+                padding: '5px 4px',
+                fontSize: '10.5px',
+                fontWeight: 700,
+                color: '#000000',
+                textAlign: 'center',
+              }}
+            >
+              ROOM NO
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, rIdx) => (
+            <tr key={row.classId}>
+              <td
+                style={{
+                  ...EXACT_COLOR_STYLE,
+                  backgroundColor: classColGrey,
+                  border: CELL_BORDER,
+                  height: '25px',
+                  padding: '3px 6px',
+                  fontSize: '10px',
+                  fontWeight: 700,
+                  color: '#000000',
+                  textAlign: 'left',
+                  verticalAlign: 'middle',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                }}
+              >
+                {row.classDisplayName}
+              </td>
+
+              {periodColumns.map((pt) => {
+                if (pt.period === 'BREAK') {
+                  if (rIdx !== 0) return null;
+                  return (
+                    <td
+                      key="merged-break"
+                      rowSpan={Math.max(rows.length, 1)}
+                      style={{
+                        ...EXACT_COLOR_STYLE,
+                        backgroundColor: COLORS.white,
+                        border: CELL_BORDER,
+                        textAlign: 'center',
+                        verticalAlign: 'middle',
+                        fontSize: '11px',
+                        fontWeight: 700,
+                        color: '#000000',
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          lineHeight: 2.1,
+                        }}
+                      >
+                        <span>B</span>
+                        <span>R</span>
+                        <span>E</span>
+                        <span>A</span>
+                        <span>K</span>
+                      </div>
+                    </td>
+                  );
+                }
+
+                const cell = row.periods[pt.period as number] ?? null;
+                const cellText = formatDayOrderCellLabel(cell);
+
+                return (
+                  <td
+                    key={`${row.classId}-p${pt.period}`}
+                    style={{
+                      ...EXACT_COLOR_STYLE,
+                      backgroundColor: COLORS.white,
+                      border: CELL_BORDER,
+                      height: '25px',
+                      padding: '2px 4px',
+                      fontSize: '10px',
+                      fontWeight: 700,
+                      color: '#000000',
+                      textAlign: 'center',
+                      verticalAlign: 'middle',
+                      wordBreak: 'break-word',
+                    }}
+                  >
+                    {cellText}
+                  </td>
+                );
+              })}
+
+              <td
+                style={{
+                  ...EXACT_COLOR_STYLE,
+                  backgroundColor: COLORS.white,
+                  border: CELL_BORDER,
+                  height: '25px',
+                  padding: '3px 4px',
+                  fontSize: '10px',
+                  fontWeight: 700,
+                  color: '#000000',
+                  textAlign: 'center',
+                  verticalAlign: 'middle',
+                }}
+              >
+                {row.roomNo || '—'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {/* Empty 5-Row Adjustment Table below the Grid */}
+      <table
+        style={{
+          width: '100%',
+          borderCollapse: 'collapse',
+          tableLayout: 'fixed',
+          fontFamily: SERIF_FONT,
+          border: CELL_BORDER,
+          marginTop: '10px',
+        }}
+      >
+        <colgroup>
+          <col style={{ width: '5%' }} />
+          <col style={{ width: '13%' }} />
+          <col style={{ width: '9%' }} />
+          <col style={{ width: '14%' }} />
+          <col style={{ width: '9%' }} />
+          <col style={{ width: '14%' }} />
+          <col style={{ width: '9%' }} />
+          <col style={{ width: '14%' }} />
+          <col style={{ width: '13%' }} />
+        </colgroup>
+        <thead>
+          <tr>
+            {[
+              'S.NO',
+              'STAFF',
+              'CLASS',
+              'ADJUSTED BY',
+              'CLASS',
+              'ADJUSTED BY',
+              'CLASS',
+              'ADJUSTED BY',
+              'REMARKS',
+            ].map((colTitle, idx) => (
+              <th
+                key={idx}
+                style={{
+                  ...EXACT_COLOR_STYLE,
+                  backgroundColor: headerGrey,
+                  border: CELL_BORDER,
+                  padding: '4px 3px',
+                  fontSize: '9px',
+                  fontWeight: 700,
+                  color: '#000000',
+                  textAlign: 'center',
+                }}
+              >
+                {colTitle}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {[0, 1, 2, 3, 4].map((rowIdx) => (
+            <tr key={rowIdx}>
+              {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((colIdx) => (
+                <td
+                  key={colIdx}
+                  style={{
+                    ...EXACT_COLOR_STYLE,
+                    backgroundColor: COLORS.white,
+                    border: CELL_BORDER,
+                    height: '20px',
+                    padding: '2px 4px',
+                    fontSize: '9.5px',
+                  }}
+                />
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {/* Bottom Right Bold FACILITATOR */}
+      <div
+        style={{
+          marginTop: '16px',
+          textAlign: 'right',
+          fontFamily: SERIF_FONT,
+          fontSize: '11.5px',
           fontWeight: 700,
           color: '#000000',
           paddingRight: '8px',

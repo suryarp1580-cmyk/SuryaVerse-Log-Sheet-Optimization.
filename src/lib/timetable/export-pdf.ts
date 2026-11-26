@@ -13,16 +13,21 @@ import {
   mergeLabBlockStaffInSlots,
   parseFixedSlotStaffIds,
 } from './fixed-periods-api';
+import { DAY_ORDERS, DAY_ORDER_LABELS } from './constants';
 import {
   slotKey,
   type ClassTimetableData,
+  type DayOrderRow,
+  type DayOrderTimetableData,
   type GridCellMap,
   type StaffTimetableData,
 } from './grid-types';
 import type { FixedPeriodsByClass, TTClass, TTStaff, TTWorkload } from './types';
 import {
   COLLEGE_LOGO_URL,
+  ClassLegendPdfPage,
   ClassTimetablePdfPage,
+  DayOrderPdfPage,
   StaffTimetablePdfPage,
   type ClassPdfMetadata,
   type EnrichedStaffTimetableData,
@@ -35,7 +40,7 @@ let cachedLogoDataUrl: string | null = null;
  */
 export function buildTimetablePdfFilename(
   label: string,
-  kind: 'Class' | 'Staff' | 'All_Classes' | 'All_Staff'
+  kind: 'Class' | 'Staff' | 'All_Classes' | 'All_Staff' | 'Day_Order' | 'All_Day_Orders'
 ): string {
   const clean = (label || 'Timetable')
     .trim()
@@ -244,6 +249,76 @@ export function enrichClassTimetableForPdf(
     },
     meta,
   };
+}
+
+/**
+ * Builds Day Order Wise grid data for a single Day Order (1..6) strictly from the
+ * live generated master timetable (with Step 0 fixed slots & Lab Block staff),
+ * ignoring any Daily Log Sheet substitutions, swaps, or leave overrides.
+ */
+export function buildDayOrderTimetableData(
+  dayOrder: number,
+  classTimetables: ClassTimetableData[],
+  classes: TTClass[] = [],
+  staff: TTStaff[] = []
+): DayOrderTimetableData {
+  const sortedClasses = [...classes].sort((a, b) => a.sort_order - b.sort_order);
+
+  const byClassId = new Map<string, ClassTimetableData>();
+  for (const ct of classTimetables) {
+    byClassId.set(ct.classId, ct);
+  }
+
+  const targetList: TTClass[] =
+    sortedClasses.length > 0
+      ? sortedClasses
+      : classTimetables.map((ct, idx) => ({
+          id: ct.classId,
+          code: ct.classId,
+          display_name: ct.classDisplayName,
+          sort_order: idx + 1,
+        }));
+
+  const rows: DayOrderRow[] = targetList.map((cls) => {
+    const raw: ClassTimetableData = byClassId.get(cls.id) ?? {
+      classId: cls.id,
+      classDisplayName: cls.display_name,
+      cells: {},
+      unresolved: [],
+      legend: [],
+    };
+    const { enriched, meta } = enrichClassTimetableForPdf(
+      {
+        ...raw,
+        classDisplayName:
+          raw.classDisplayName && raw.classDisplayName !== cls.id
+            ? raw.classDisplayName
+            : cls.display_name,
+      },
+      classes,
+      staff
+    );
+
+    const displayName = meta.yearLabel.toUpperCase().includes('M.COM')
+      ? meta.yearLabel
+      : `${meta.yearLabel} - ${meta.section}`;
+
+    const periods: Record<number, ClassTimetableData['cells'][string] | null> = {};
+    for (let p = 1; p <= 5; p++) {
+      periods[p] = enriched.cells[slotKey(dayOrder, p)] ?? null;
+    }
+
+    return {
+      classId: cls.id,
+      classCode: cls.code,
+      classDisplayName: displayName || enriched.classDisplayName,
+      roomNo: meta.roomNo || '—',
+      sortOrder: cls.sort_order,
+      periods,
+    };
+  });
+
+  return { dayOrder, rows };
 }
 
 /**
@@ -508,12 +583,14 @@ async function waitForImagesInContainer(container: HTMLElement): Promise<void> {
 }
 
 /**
- * Renders an ordered list of A4 Portrait sheet elements off-screen, one per page,
- * scales each cleanly onto exactly one A4 Portrait PDF page, and downloads the file.
+ * Renders an ordered list of sheet elements off-screen, one per page,
+ * scales each cleanly onto exactly one A4 PDF page (Portrait or Landscape),
+ * and downloads the file.
  */
-async function renderPagesAndSaveA4PortraitPdf(
+async function renderPagesAndSavePdf(
   pageFactories: Array<(logoSrc: string) => React.ReactElement>,
-  fileName: string
+  fileName: string,
+  orientation: 'portrait' | 'landscape' = 'portrait'
 ): Promise<void> {
   if (pageFactories.length === 0) {
     throw new Error('No timetable pages available to export.');
@@ -524,6 +601,7 @@ async function renderPagesAndSaveA4PortraitPdf(
   }
 
   const logoSrc = await loadLogoDataUrl();
+  const captureWidth = orientation === 'landscape' ? 1123 : 794;
 
   const hostDiv = document.createElement('div');
   hostDiv.setAttribute('data-timetable-pdf-host', 'true');
@@ -531,7 +609,7 @@ async function renderPagesAndSaveA4PortraitPdf(
     position: 'fixed',
     left: '-10000px',
     top: '0',
-    width: '794px',
+    width: `${captureWidth}px`,
     backgroundColor: '#ffffff',
     opacity: '1',
     pointerEvents: 'none',
@@ -545,17 +623,17 @@ async function renderPagesAndSaveA4PortraitPdf(
     root = createRoot(hostDiv);
 
     const pdf = new jsPDF({
-      orientation: 'portrait',
+      orientation,
       unit: 'mm',
       format: 'a4',
       compress: true,
     });
 
-    const pageW = pdf.internal.pageSize.getWidth(); // 210mm
-    const pageH = pdf.internal.pageSize.getHeight(); // 297mm
+    const pageW = pdf.internal.pageSize.getWidth();
+    const pageH = pdf.internal.pageSize.getHeight();
     const margin = 6;
-    const availW = pageW - margin * 2; // 198mm
-    const availH = pageH - margin * 2; // 285mm
+    const availW = pageW - margin * 2;
+    const availH = pageH - margin * 2;
 
     for (let i = 0; i < pageFactories.length; i++) {
       root.render(pageFactories[i](logoSrc));
@@ -578,8 +656,8 @@ async function renderPagesAndSaveA4PortraitPdf(
           logging: false,
           imageTimeout: 10000,
           backgroundColor: '#ffffff',
-          width: 794,
-          windowWidth: 794,
+          width: captureWidth,
+          windowWidth: captureWidth,
           scrollX: 0,
           scrollY: 0,
         }),
@@ -601,7 +679,7 @@ async function renderPagesAndSaveA4PortraitPdf(
 
       const imgData = canvas.toDataURL('image/png');
       if (i > 0) {
-        pdf.addPage('a4', 'portrait');
+        pdf.addPage('a4', orientation);
       }
       pdf.addImage(imgData, 'PNG', xOffset, yOffset, renderW, renderH, undefined, 'FAST');
     }
@@ -617,8 +695,15 @@ async function renderPagesAndSaveA4PortraitPdf(
   }
 }
 
+async function renderPagesAndSaveA4PortraitPdf(
+  pageFactories: Array<(logoSrc: string) => React.ReactElement>,
+  fileName: string
+): Promise<void> {
+  return renderPagesAndSavePdf(pageFactories, fileName, 'portrait');
+}
+
 /**
- * Downloads a single Class Time Table PDF matching the official A4 Portrait template.
+ * Downloads a single Class Time Table PDF (Page 1: Timetable Grid, Page 2: Subject Legend).
  */
 export async function downloadClassTimetablePdf(
   data: ClassTimetableData,
@@ -636,6 +721,12 @@ export async function downloadClassTimetablePdf(
           meta,
           logoSrc,
         }),
+      (logoSrc) =>
+        React.createElement(ClassLegendPdfPage, {
+          data: enriched,
+          meta,
+          logoSrc,
+        }),
     ],
     fileName
   );
@@ -644,7 +735,7 @@ export async function downloadClassTimetablePdf(
 }
 
 /**
- * Downloads all classes (one class per A4 Portrait page) in a single PDF.
+ * Downloads all classes (Page 1: Timetable + Page 2: Subject Legend per class) in a single PDF.
  */
 export async function downloadAllClassesTimetablePdf(
   classes: TTClass[],
@@ -673,16 +764,79 @@ export async function downloadAllClassesTimetablePdf(
 
   const fileName = buildTimetablePdfFilename('All_Classes', 'All_Classes');
   await renderPagesAndSaveA4PortraitPdf(
-    allEntries.map(
-      ({ enriched, meta }) =>
-        (logoSrc: string) =>
-          React.createElement(ClassTimetablePdfPage, {
-            data: enriched,
-            meta,
-            logoSrc,
-          })
-    ),
+    allEntries.flatMap(({ enriched, meta }) => [
+      (logoSrc: string) =>
+        React.createElement(ClassTimetablePdfPage, {
+          data: enriched,
+          meta,
+          logoSrc,
+        }),
+      (logoSrc: string) =>
+        React.createElement(ClassLegendPdfPage, {
+          data: enriched,
+          meta,
+          logoSrc,
+        }),
+    ]),
     fileName
+  );
+
+  return fileName;
+}
+
+/**
+ * Downloads a single Day Order (1..6) as a 1-page A4 Landscape PDF.
+ */
+export async function downloadDayOrderTimetablePdf(
+  data: DayOrderTimetableData
+): Promise<string> {
+  const dayRoman = DAY_ORDER_LABELS[data.dayOrder] || String(data.dayOrder);
+  const fileName = buildTimetablePdfFilename(`Day_Order_${dayRoman}`, 'Day_Order');
+
+  await renderPagesAndSavePdf(
+    [
+      (logoSrc) =>
+        React.createElement(DayOrderPdfPage, {
+          data,
+          logoSrc,
+        }),
+    ],
+    fileName,
+    'landscape'
+  );
+
+  return fileName;
+}
+
+/**
+ * Downloads all 6 Day Orders (I–VI) in a single 6-page A4 Landscape PDF (1 Day Order per page).
+ */
+export async function downloadAllDayOrdersTimetablePdf(
+  classes: TTClass[],
+  staff: TTStaff[],
+  fetchClassData: (classId: string) => Promise<ClassTimetableData>
+): Promise<string> {
+  if (!classes || classes.length === 0) {
+    throw new Error('No classes found to download.');
+  }
+
+  const sortedClasses = [...classes].sort((a, b) => a.sort_order - b.sort_order);
+  const classTimetables = await Promise.all(sortedClasses.map((cls) => fetchClassData(cls.id)));
+  const dayOrderPages = DAY_ORDERS.map((dayOrder) =>
+    buildDayOrderTimetableData(dayOrder, classTimetables, sortedClasses, staff)
+  );
+
+  const fileName = buildTimetablePdfFilename('All_Day_Orders', 'All_Day_Orders');
+  await renderPagesAndSavePdf(
+    dayOrderPages.map(
+      (dayData) => (logoSrc: string) =>
+        React.createElement(DayOrderPdfPage, {
+          data: dayData,
+          logoSrc,
+        })
+    ),
+    fileName,
+    'landscape'
   );
 
   return fileName;

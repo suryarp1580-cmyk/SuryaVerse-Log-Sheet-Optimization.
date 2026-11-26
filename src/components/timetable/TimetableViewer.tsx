@@ -7,14 +7,20 @@
 import { useEffect, useState, useTransition } from 'react';
 import type { TTClass, TTStaff } from '../../lib/timetable/types';
 import type { ClassTimetableData, StaffTimetableData } from '../../lib/timetable/grid-types';
-import { getClassTimetable, getStaffTimetable } from '../../lib/timetable/view-api';
+import {
+  getAllClassTimetables,
+  getClassTimetable,
+  getStaffTimetable,
+} from '../../lib/timetable/view-api';
 import {
   downloadAllClassesTimetablePdf,
+  downloadAllDayOrdersTimetablePdf,
   downloadAllStaffTimetablePdf,
 } from '../../lib/timetable/export-pdf';
 import { getActiveSupabaseUrl, getSupabaseProjectRef, isSupabaseConfigured } from '../../lib/supabaseClient';
 import ClassTimetableView from './ClassTimetableView';
 import StaffTimetableView from './StaffTimetableView';
+import DayOrderTimetableView from './DayOrderTimetableView';
 import { PageHeader, SecondaryButton, inputClass } from './ui';
 import { AlertCircle, Download, RefreshCw, Globe, Loader2 } from 'lucide-react';
 
@@ -23,7 +29,7 @@ interface Props {
   staff: TTStaff[];
 }
 
-type Tab = 'class' | 'staff';
+type Tab = 'class' | 'staff' | 'dayOrder';
 
 export default function TimetableViewer({ classes, staff }: Props) {
   const [tab, setTab] = useState<Tab>('class');
@@ -31,11 +37,13 @@ export default function TimetableViewer({ classes, staff }: Props) {
   const [selectedStaffId, setSelectedStaffId] = useState(staff[0]?.id ?? '');
   const [classData, setClassData] = useState<ClassTimetableData | null>(null);
   const [staffData, setStaffData] = useState<StaffTimetableData | null>(null);
+  const [dayOrderClassTimetables, setDayOrderClassTimetables] = useState<ClassTimetableData[]>([]);
   const [viewError, setViewError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
   const [isPending, startTransition] = useTransition();
   const [isDownloadingAllClasses, setIsDownloadingAllClasses] = useState(false);
   const [isDownloadingAllStaff, setIsDownloadingAllStaff] = useState(false);
+  const [isDownloadingAllDayOrders, setIsDownloadingAllDayOrders] = useState(false);
   const [bulkDownloadStatus, setBulkDownloadStatus] = useState<{ text: string; ok: boolean } | null>(null);
 
   const activeUrl = getActiveSupabaseUrl();
@@ -50,7 +58,7 @@ export default function TimetableViewer({ classes, staff }: Props) {
         getClassTimetable(cid, retryKey > 0)
       );
       setBulkDownloadStatus({
-        text: `Downloaded ${fileName} (${classes.length} classes, 1 per page).`,
+        text: `Downloaded ${fileName} (${classes.length} classes, 2 pages per class).`,
         ok: true,
       });
     } catch (err: any) {
@@ -82,6 +90,28 @@ export default function TimetableViewer({ classes, staff }: Props) {
       });
     } finally {
       setIsDownloadingAllStaff(false);
+    }
+  }
+
+  async function handleDownloadAllDayOrders() {
+    if (isDownloadingAllDayOrders || classes.length === 0) return;
+    setIsDownloadingAllDayOrders(true);
+    setBulkDownloadStatus(null);
+    try {
+      const fileName = await downloadAllDayOrdersTimetablePdf(classes, staff, (cid) =>
+        getClassTimetable(cid, retryKey > 0)
+      );
+      setBulkDownloadStatus({
+        text: `Downloaded ${fileName} (Day Orders I–VI, 6 pages).`,
+        ok: true,
+      });
+    } catch (err: any) {
+      setBulkDownloadStatus({
+        text: err?.message || 'Failed to download All Day Orders PDF.',
+        ok: false,
+      });
+    } finally {
+      setIsDownloadingAllDayOrders(false);
     }
   }
 
@@ -144,6 +174,23 @@ export default function TimetableViewer({ classes, staff }: Props) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, selectedStaffId, retryKey]);
+
+  useEffect(() => {
+    if (tab === 'dayOrder' && classes.length > 0) {
+      setViewError(null);
+      startTransition(async () => {
+        try {
+          const forceLive = retryKey > 0;
+          const allData = await getAllClassTimetables(classes, forceLive);
+          setDayOrderClassTimetables(allData);
+        } catch (err: any) {
+          const msg = err instanceof Error ? err.message : String(err);
+          setViewError(msg);
+        }
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, retryKey, classes.length]);
 
   return (
     <div className="max-w-5xl mx-auto px-6 py-8 space-y-6">
@@ -211,6 +258,17 @@ export default function TimetableViewer({ classes, staff }: Props) {
           }`}
         >
           Staff Wise
+        </button>
+        <button
+          onClick={() => {
+            setTab('dayOrder');
+            setBulkDownloadStatus(null);
+          }}
+          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+            tab === 'dayOrder' ? 'border-[#D4AF37] text-[#3A0D0D]' : 'border-transparent text-[#8A806D] hover:text-[#4A4038]'
+          }`}
+        >
+          Day Order Wise
         </button>
       </div>
 
@@ -305,6 +363,48 @@ export default function TimetableViewer({ classes, staff }: Props) {
           </div>
           {isPending && !staffData && <p className="text-sm text-[#8A806D]">Loading schedule…</p>}
           {staffData && <StaffTimetableView data={staffData} classes={classes} staff={staff} />}
+        </div>
+      )}
+
+      {tab === 'dayOrder' && (
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-[#5D5348]">
+                Combined schedule across all {classes.length} classes (live generated master timetable)
+              </span>
+              <button
+                type="button"
+                onClick={() => setRetryKey((k) => k + 1)}
+                disabled={isPending}
+                title="Refresh and sync timetable directly from Supabase"
+                className="p-2 border border-[#E4DCC9] bg-white text-[#4A4038] hover:bg-[#FAF7F1] rounded-lg transition-colors"
+              >
+                <RefreshCw className={`w-4 h-4 text-[#8A806D] ${isPending ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
+            <SecondaryButton
+              type="button"
+              onClick={handleDownloadAllDayOrders}
+              disabled={isDownloadingAllDayOrders || classes.length === 0}
+              title="Download Day Orders I–VI in a single 6-page PDF (1 Day Order per page)"
+            >
+              {isDownloadingAllDayOrders ? (
+                <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
+              ) : (
+                <Download className="w-4 h-4 mr-1.5" />
+              )}
+              <span>{isDownloadingAllDayOrders ? 'Generating All Day Orders…' : 'Download All Day Orders'}</span>
+            </SecondaryButton>
+          </div>
+          {isPending && dayOrderClassTimetables.length === 0 && (
+            <p className="text-sm text-[#8A806D]">Loading schedule…</p>
+          )}
+          <DayOrderTimetableView
+            classTimetables={dayOrderClassTimetables}
+            classes={classes}
+            staff={staff}
+          />
         </div>
       )}
     </div>

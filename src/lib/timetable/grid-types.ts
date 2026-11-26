@@ -54,6 +54,20 @@ export interface StaffTimetableData {
   }>;
 }
 
+export interface DayOrderRow {
+  classId: string;
+  classCode: string;
+  classDisplayName: string;
+  roomNo: string;
+  sortOrder: number;
+  periods: Record<number, GridCell | null>;
+}
+
+export interface DayOrderTimetableData {
+  dayOrder: number;
+  rows: DayOrderRow[];
+}
+
 export function slotKey(dayOrder: number, period: number): string {
   return `${dayOrder}_${period}`;
 }
