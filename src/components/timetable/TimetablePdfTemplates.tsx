@@ -271,7 +271,7 @@ export function ClassTimetablePdfPage({
         <div style={{ fontSize: '14px' }}>DEPARTMENT OF ACCOUNTING &amp; FINANCE</div>
         <div style={{ fontSize: '14px' }}>CLASS TIME TABLE</div>
         <div style={{ fontSize: '12.5px' }}>
-          ACADEMIC YEAR 2026-2027 (ODD SEMESTER JUNE - NOVEMBER)
+          ACADEMIC YEAR 2026–2027 (EVEN SEMESTER DECEMBER 2026 – APRIL 2027)
         </div>
       </div>
 
