@@ -38,6 +38,8 @@ export default function GenerateButton() {
               summary.success &&
               summary.unresolved.length === 0 &&
               summary.fixedClashes.length === 0 &&
+              summary.sameDayRepeats.length === 0 &&
+              summary.overSixHoursWarnings.length === 0 &&
               summary.consecutiveWarnings.length === 0
                 ? 'success'
                 : summary.success
@@ -73,12 +75,61 @@ export default function GenerateButton() {
 
               {summary.fixedClashes.length === 0 &&
               summary.unresolved.length === 0 &&
-              summary.consecutiveWarnings.length === 0 ? (
-                <p className="text-sm text-[#3F6634] font-medium">
-                  No clashes. No consecutive periods.
-                </p>
+              summary.consecutiveWarnings.length === 0 &&
+              summary.sameDayRepeats.length === 0 &&
+              summary.overSixHoursWarnings.length === 0 ? (
+                <div className="space-y-1">
+                  <p className="text-sm text-[#3F6634] font-medium">
+                    No clashes. No consecutive periods.
+                  </p>
+                  <p className="text-sm text-[#3F6634] font-medium">
+                    Every subject appears at most once per Day Order.
+                  </p>
+                </div>
               ) : (
                 <div className="space-y-4">
+                  {summary.sameDayRepeats.length === 0 && summary.overSixHoursWarnings.length === 0 && (
+                    <p className="text-sm text-[#3F6634] font-medium">
+                      Every subject appears at most once per Day Order.
+                    </p>
+                  )}
+
+                  {summary.overSixHoursWarnings.length > 0 && (
+                    <div>
+                      <h3 className="text-xs font-semibold uppercase tracking-wide text-[#8C1F1F] mb-1.5">
+                        Subjects exceeding 6 weekly hours ({summary.overSixHoursWarnings.length})
+                      </h3>
+                      <ul className="space-y-1 text-sm">
+                        {summary.overSixHoursWarnings.map((o, i) => (
+                          <li
+                            key={i}
+                            className="border-l-4 border-[#8C1F1F] bg-[#FBEAEA] px-3 py-2 text-[#6B1717]"
+                          >
+                            {o.text}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {summary.sameDayRepeats.length > 0 && (
+                    <div>
+                      <h3 className="text-xs font-semibold uppercase tracking-wide text-[#A9631A] mb-1.5">
+                        Same-day subject repeats ({summary.sameDayRepeats.length})
+                      </h3>
+                      <ul className="space-y-1 text-sm">
+                        {summary.sameDayRepeats.map((r, i) => (
+                          <li
+                            key={i}
+                            className="border-l-4 border-[#A9631A] bg-[#FBF1E6] px-3 py-2 text-[#7A480F]"
+                          >
+                            {r.text}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
                   {summary.fixedClashes.length > 0 && (
                     <div>
                       <h3 className="text-xs font-semibold uppercase tracking-wide text-[#8C1F1F] mb-1.5">

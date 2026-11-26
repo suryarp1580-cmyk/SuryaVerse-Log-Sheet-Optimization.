@@ -51,6 +51,22 @@ export interface GenerateRunSummary {
     periodB: number;
     text: string;
   }>;
+  sameDayRepeats: Array<{
+    classId: string;
+    classCode: string;
+    subjectCode: string;
+    dayOrder: number;
+    dayOrderLabel: string;
+    count: number;
+    text: string;
+  }>;
+  overSixHoursWarnings: Array<{
+    classId: string;
+    classCode: string;
+    subjectCode: string;
+    totalHours: number;
+    text: string;
+  }>;
   attemptsUsed: number;
   staffWarnings?: string[];
 }
@@ -298,6 +314,8 @@ export async function runGenerateSchedule(): Promise<GenerateRunSummary> {
       unresolved: [],
       fixedClashes: [],
       consecutiveWarnings: [],
+      sameDayRepeats: [],
+      overSixHoursWarnings: [],
       attemptsUsed: 1,
       staffWarnings: allStaffWarnings,
     };
@@ -467,6 +485,32 @@ export async function runGenerateSchedule(): Promise<GenerateRunSummary> {
     };
   });
 
+  const sameDayRepeatsSummary = result.sameDaySubjectRepeats.map((r) => {
+    const classDisplayName = classById.get(r.classId)?.display_name ?? r.classId;
+    const dayOrderLabel =
+      DAY_ORDER_LABELS[r.dayOrder as keyof typeof DAY_ORDER_LABELS] ?? String(r.dayOrder);
+    return {
+      classId: r.classId,
+      classCode: classDisplayName,
+      subjectCode: r.subjectCode,
+      dayOrder: r.dayOrder,
+      dayOrderLabel,
+      count: r.count,
+      text: `${classDisplayName}, ${r.subjectCode}: ${r.count} periods on Day Order ${dayOrderLabel}`,
+    };
+  });
+
+  const overSixHoursSummary = result.overSixHoursSubjects.map((o) => {
+    const classDisplayName = classById.get(o.classId)?.display_name ?? o.classId;
+    return {
+      classId: o.classId,
+      classCode: classDisplayName,
+      subjectCode: o.subjectCode,
+      totalHours: o.totalHours,
+      text: `${classDisplayName}, ${o.subjectCode}: ${o.totalHours} weekly hours (exceeds 6 Day Orders)`,
+    };
+  });
+
   try {
     await supabase.from('tt_generation_runs').insert({
       classes_affected: affectedClassIds.length,
@@ -478,6 +522,8 @@ export async function runGenerateSchedule(): Promise<GenerateRunSummary> {
         unresolved: unresolvedSummary,
         fixedClashes: fixedClashSummary,
         consecutiveWarnings: consecutiveWarningsSummary,
+        sameDayRepeats: sameDayRepeatsSummary,
+        overSixHoursWarnings: overSixHoursSummary,
         staffWarnings: allStaffWarnings,
       },
     });
@@ -487,21 +533,26 @@ export async function runGenerateSchedule(): Promise<GenerateRunSummary> {
 
   const hasUnresolvedOrClash =
     result.unresolved.length > 0 || result.fixedClashes.length > 0;
+  const hasSameDayRepeat = sameDayRepeatsSummary.length > 0 || overSixHoursSummary.length > 0;
   const hasConsecutive = consecutiveWarningsSummary.length > 0;
 
   return {
     success: true,
     message:
-      !hasUnresolvedOrClash && !hasConsecutive
+      !hasUnresolvedOrClash && !hasSameDayRepeat && !hasConsecutive
         ? `Generated a complete, clash-free timetable across ${affectedClassIds.length} classes (${blockedSlots.length} Step 0 fixed slots preserved).`
         : hasUnresolvedOrClash
           ? `Generated with ${result.unresolved.length} unplaced hour(s) and ${result.fixedClashes.length} fixed-slot clash(es) — see report below.`
-          : `Generated a clash-free timetable across ${affectedClassIds.length} classes with ${consecutiveWarningsSummary.length} unavoidable back-to-back period warning(s).`,
+          : hasSameDayRepeat
+            ? `Generated across ${affectedClassIds.length} classes with ${sameDayRepeatsSummary.length} same-day subject repeat(s) — see report below.`
+            : `Generated a clash-free timetable across ${affectedClassIds.length} classes with ${consecutiveWarningsSummary.length} unavoidable back-to-back period warning(s).`,
     classesAffected: affectedClassIds.length,
     slotsPlaced: result.slots.length + blockedSlots.length,
     unresolved: unresolvedSummary,
     fixedClashes: fixedClashSummary,
     consecutiveWarnings: consecutiveWarningsSummary,
+    sameDayRepeats: sameDayRepeatsSummary,
+    overSixHoursWarnings: overSixHoursSummary,
     attemptsUsed: result.attemptsUsed,
     staffWarnings: allStaffWarnings,
   };
@@ -516,6 +567,8 @@ function failure(message: string, staffWarnings: string[] = []): GenerateRunSumm
     unresolved: [],
     fixedClashes: [],
     consecutiveWarnings: [],
+    sameDayRepeats: [],
+    overSixHoursWarnings: [],
     attemptsUsed: 0,
     staffWarnings,
   };
