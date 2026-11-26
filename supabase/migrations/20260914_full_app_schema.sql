@@ -247,6 +247,24 @@ create policy "tt_slots_write" on public.tt_slots for all using (auth.role() = '
 create policy "tt_generation_runs_read" on public.tt_generation_runs for select using (true);
 create policy "tt_generation_runs_write" on public.tt_generation_runs for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 
+create table if not exists public.tt_fixed_periods (
+  id uuid primary key default gen_random_uuid(),
+  class_id uuid not null references public.tt_classes(id) on delete cascade,
+  day_order int not null check (day_order between 1 and 6),
+  period int not null check (period between 1 and 5),
+  slot_type text not null check (slot_type in ('LANG', 'ENG', 'LAB')),
+  assigned_staff_id text,
+  created_at timestamptz not null default now(),
+  unique (class_id, day_order, period)
+);
+alter table public.tt_fixed_periods add column if not exists assigned_staff_id text;
+create index if not exists idx_tt_fixed_periods_class on public.tt_fixed_periods(class_id);
+alter table public.tt_fixed_periods enable row level security;
+drop policy if exists "tt_fixed_periods_read" on public.tt_fixed_periods;
+create policy "tt_fixed_periods_read" on public.tt_fixed_periods for select using (true);
+drop policy if exists "tt_fixed_periods_write" on public.tt_fixed_periods;
+create policy "tt_fixed_periods_write" on public.tt_fixed_periods for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+
 -- ----------------------------------------------------------------------------
 -- 9. SEED DATA FOR TIMETABLE GENERATOR (18 ACCFIN Staff & 11 Classes)
 -- ----------------------------------------------------------------------------

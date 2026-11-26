@@ -7,7 +7,7 @@
 // and safe idempotent CREATE TABLE IF NOT EXISTS scripts.
 // ============================================================================
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import type { FixedPeriodsByClass, TTClass, TTStaff, TTWorkload } from '../../lib/timetable/types';
 import type { Staff } from '../../types';
 import {
@@ -194,9 +194,11 @@ create table if not exists public.tt_fixed_periods (
   day_order int not null check (day_order between 1 and 6),
   period int not null check (period between 1 and 5),
   slot_type text not null check (slot_type in ('LANG', 'ENG', 'LAB')),
+  assigned_staff_id text,
   created_at timestamptz not null default now(),
   unique (class_id, day_order, period)
 );
+alter table public.tt_fixed_periods add column if not exists assigned_staff_id text;
 create index if not exists idx_tt_fixed_periods_class on public.tt_fixed_periods(class_id);
 
 alter table public.tt_fixed_periods enable row level security;
@@ -269,26 +271,8 @@ export default function TimetableGeneratorModule({ liveStaffList }: Props) {
         ]);
         if (cancelled) return;
 
-        // If liveStaffList is passed from App.tsx, integrate any added faculty
-        let combinedStaff = staffList;
-        if (liveStaffList && liveStaffList.length > 0) {
-          const existingCodes = new Set(staffList.map((s) => s.short_code.toUpperCase()));
-          const newFromApp: TTStaff[] = liveStaffList
-            .filter((s) => !existingCodes.has(s.code.toUpperCase()))
-            .map((s) => ({
-              id: s.id,
-              short_code: s.code.toUpperCase(),
-              full_name: s.fullName || `Prof. ${s.code.toUpperCase()}`,
-              status: s.isActive ? 'ACTIVE' : 'INACTIVE',
-              is_hod: false,
-            }));
-          if (newFromApp.length > 0) {
-            combinedStaff = [...staffList, ...newFromApp];
-          }
-        }
-
         const effectiveClasses = classList.length > 0 ? classList : DEFAULT_ACCFIN_CLASSES;
-        const effectiveStaff = combinedStaff.length > 0 ? combinedStaff : DEFAULT_ACCFIN_STAFF;
+        const effectiveStaff = staffList.length > 0 ? staffList : DEFAULT_ACCFIN_STAFF;
         const fixedMap = await getAllFixedPeriods(effectiveClasses, allWorkload);
         if (cancelled) return;
 
@@ -309,7 +293,34 @@ export default function TimetableGeneratorModule({ liveStaffList }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [fetchKey, liveStaffList]);
+  }, [fetchKey]);
+
+  // Synchronize live Staff Directory (additions, edits, and removals) across Step 0, Step 1, and Step 3
+  const syncedStaff = useMemo<TTStaff[]>(() => {
+    const baseStaff = staff.length > 0 ? staff : DEFAULT_ACCFIN_STAFF;
+    if (!liveStaffList || liveStaffList.length === 0) {
+      return baseStaff;
+    }
+
+    const baseByCode = new Map<string, TTStaff>(
+      baseStaff.map((s) => [s.short_code.trim().toUpperCase(), s])
+    );
+
+    return liveStaffList
+      .filter((s) => s && s.isActive !== false)
+      .map((s) => {
+        const code = s.code.trim().toUpperCase();
+        const existing = baseByCode.get(code);
+        return {
+          id: existing?.id ?? s.id,
+          short_code: code,
+          full_name: s.fullName || existing?.full_name || `Prof. ${code}`,
+          status: 'ACTIVE' as const,
+          is_hod: existing?.is_hod ?? false,
+        };
+      })
+      .sort((a, b) => a.full_name.localeCompare(b.full_name));
+  }, [staff, liveStaffList]);
 
   const handleUseOfflineDefaults = async () => {
     const offlineWorkload = loadWorkloadMemory();
@@ -580,6 +591,7 @@ notify pgrst, 'reload config';`;
       {step === 'fixed' && (
         <FixedPeriodsSetup
           classes={classes}
+          staff={syncedStaff}
           fixedPeriodsByClass={fixedPeriodsByClass}
           onFixedPeriodsChange={setFixedPeriodsByClass}
           onProceedToWorkload={() => setStep('workload')}
@@ -588,7 +600,7 @@ notify pgrst, 'reload config';`;
       {step === 'workload' && (
         <WorkloadEntryForm
           classes={classes}
-          staff={staff}
+          staff={syncedStaff}
           initialWorkloadByClass={workloadByClass}
           fixedPeriodsByClass={fixedPeriodsByClass}
           onWorkloadChange={setWorkloadByClass}
@@ -596,7 +608,7 @@ notify pgrst, 'reload config';`;
         />
       )}
       {step === 'generate' && <GenerateButton />}
-      {step === 'view' && <TimetableViewer classes={classes} staff={staff} />}
+      {step === 'view' && <TimetableViewer classes={classes} staff={syncedStaff} />}
     </div>
   );
 }

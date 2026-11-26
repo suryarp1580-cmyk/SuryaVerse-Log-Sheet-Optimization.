@@ -6,30 +6,32 @@
 
 import { useRef, useState } from 'react';
 import TimetableGrid from './TimetableGrid';
-import type { StaffTimetableData } from '@/lib/timetable/grid-types';
-import { buildTimetablePdfFilename, exportTimetableToPdf } from '../../lib/timetable/export-pdf';
+import type { StaffTimetableData } from '../../lib/timetable/grid-types';
+import type { TTClass, TTStaff } from '../../lib/timetable/types';
+import { downloadStaffTimetablePdf } from '../../lib/timetable/export-pdf';
 import { Panel, PrimaryButton, SecondaryButton } from './ui';
 import { Download, Loader2, Printer } from 'lucide-react';
 
 interface Props {
   data: StaffTimetableData;
+  classes?: TTClass[];
+  staff?: TTStaff[];
 }
 
-export default function StaffTimetableView({ data }: Props) {
+export default function StaffTimetableView({ data, classes = [], staff = [] }: Props) {
   const [isDownloading, setIsDownloading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ text: string; ok: boolean } | null>(null);
   const exportRef = useRef<HTMLDivElement>(null);
 
   async function handleDownload() {
-    if (isDownloading || !exportRef.current) return;
+    if (isDownloading) return;
     setIsDownloading(true);
     setStatusMessage(null);
     try {
-      const fileName = buildTimetablePdfFilename(data.staffName, 'Staff');
-      await exportTimetableToPdf(exportRef.current, fileName);
+      const fileName = await downloadStaffTimetablePdf(data, classes, staff);
       setStatusMessage({ text: `Downloaded ${fileName} to your PC.`, ok: true });
     } catch (err: any) {
-      setStatusMessage({ text: err?.message || 'Failed to download timetable PDF.', ok: false });
+      setStatusMessage({ text: err?.message || 'Failed to download Staff Timetable PDF.', ok: false });
     } finally {
       setIsDownloading(false);
     }
@@ -51,14 +53,14 @@ export default function StaffTimetableView({ data }: Props) {
             type="button"
             onClick={handleDownload}
             disabled={isDownloading}
-            title="Download Staff Timetable as PDF to your PC"
+            title="Download Individual Staff Timetable as A4 Portrait PDF"
           >
             {isDownloading ? (
               <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
             ) : (
               <Download className="w-4 h-4 mr-1.5" />
             )}
-            <span>{isDownloading ? 'Downloading…' : 'Download'}</span>
+            <span>{isDownloading ? 'Generating PDF…' : 'Download Staff Timetable (PDF)'}</span>
           </PrimaryButton>
         </div>
       </div>

@@ -12,7 +12,8 @@ import {
   type SchedulableWorkload,
 } from './scheduler';
 import type { TTStaff, TTClass, TTWorkload } from './types';
-import { resolveWorkloadStaff, rederiveTimetableEntries } from '../staffUtils';
+import { resolveWorkloadStaff, rederiveTimetableEntries, findTTStaff } from '../staffUtils';
+import { DAY_ORDER_LABELS } from './constants';
 import {
   saveMemoryData,
   loadMemoryData,
@@ -32,8 +33,24 @@ export interface GenerateRunSummary {
   message: string;
   classesAffected: number;
   slotsPlaced: number;
-  unresolved: Array<{ classCode: string; subjectCode: string; staffName: string; missingHours: number }>;
+  unresolved: Array<{
+    classCode: string;
+    subjectCode: string;
+    staffCode: string;
+    staffName: string;
+    missingHours: number;
+  }>;
   fixedClashes: Array<{ reason: string; classCode: string; dayOrder: number; period: number }>;
+  consecutiveWarnings: Array<{
+    staffId: string;
+    staffCode: string;
+    staffName: string;
+    dayOrder: number;
+    dayOrderLabel: string;
+    periodA: number;
+    periodB: number;
+    text: string;
+  }>;
   attemptsUsed: number;
   staffWarnings?: string[];
 }
@@ -104,11 +121,17 @@ export async function runGenerateSchedule(): Promise<GenerateRunSummary> {
     const slots = fixedPeriodsByClass[c.id] ?? [];
     const coordSet = new Set<string>();
     for (const s of slots) {
+      const resolvedAssigned = s.assigned_staff_id
+        ? findTTStaff(staff, s.assigned_staff_id)
+        : undefined;
+      const assignedStaffId = resolvedAssigned?.id ?? (s.assigned_staff_id || null);
+
       blockedSlots.push({
         classId: c.id,
         dayOrder: s.day_order,
         period: s.period,
         slotType: s.slot_type,
+        assignedStaffId,
       });
       coordSet.add(`${s.day_order}_${s.period}`);
     }
@@ -274,6 +297,7 @@ export async function runGenerateSchedule(): Promise<GenerateRunSummary> {
       slotsPlaced: rederivedEntries.length,
       unresolved: [],
       fixedClashes: [],
+      consecutiveWarnings: [],
       attemptsUsed: 1,
       staffWarnings: allStaffWarnings,
     };
@@ -407,12 +431,16 @@ export async function runGenerateSchedule(): Promise<GenerateRunSummary> {
     }
   }
 
-  const unresolvedSummary = result.unresolved.map((u) => ({
-    classCode: classById.get(u.classId)?.display_name ?? u.classId,
-    subjectCode: u.subjectCode,
-    staffName: staffById.get(u.staffId)?.full_name ?? u.staffId,
-    missingHours: u.missingHours,
-  }));
+  const unresolvedSummary = result.unresolved.map((u) => {
+    const st = staffById.get(u.staffId) ?? findTTStaff(staff, u.staffId);
+    return {
+      classCode: classById.get(u.classId)?.display_name ?? u.classId,
+      subjectCode: u.subjectCode,
+      staffCode: st?.short_code ?? u.staffId,
+      staffName: st?.full_name ?? u.staffId,
+      missingHours: u.missingHours,
+    };
+  });
 
   const fixedClashSummary = result.fixedClashes.map((c) => ({
     reason: c.reason,
@@ -421,6 +449,24 @@ export async function runGenerateSchedule(): Promise<GenerateRunSummary> {
     period: c.period,
   }));
 
+  const consecutiveWarningsSummary = result.consecutiveWarnings.map((cw) => {
+    const st = staffById.get(cw.staffId) ?? findTTStaff(staff, cw.staffId);
+    const staffCode = st?.short_code ?? cw.staffId;
+    const staffName = st?.full_name ?? cw.staffId;
+    const dayOrderLabel =
+      DAY_ORDER_LABELS[cw.dayOrder as keyof typeof DAY_ORDER_LABELS] ?? String(cw.dayOrder);
+    return {
+      staffId: cw.staffId,
+      staffCode,
+      staffName,
+      dayOrder: cw.dayOrder,
+      dayOrderLabel,
+      periodA: cw.periodA,
+      periodB: cw.periodB,
+      text: `${staffCode} - Day Order ${dayOrderLabel}: P${cw.periodA}, P${cw.periodB} adjacent`,
+    };
+  });
+
   try {
     await supabase.from('tt_generation_runs').insert({
       classes_affected: affectedClassIds.length,
@@ -428,23 +474,34 @@ export async function runGenerateSchedule(): Promise<GenerateRunSummary> {
       unresolved_count: result.unresolved.length,
       fixed_clash_count: result.fixedClashes.length,
       attempts_used: result.attemptsUsed,
-      details: { unresolved: unresolvedSummary, fixedClashes: fixedClashSummary, staffWarnings: allStaffWarnings },
+      details: {
+        unresolved: unresolvedSummary,
+        fixedClashes: fixedClashSummary,
+        consecutiveWarnings: consecutiveWarningsSummary,
+        staffWarnings: allStaffWarnings,
+      },
     });
   } catch {
     // Non-fatal
   }
 
-  const ok = result.unresolved.length === 0 && result.fixedClashes.length === 0;
+  const hasUnresolvedOrClash =
+    result.unresolved.length > 0 || result.fixedClashes.length > 0;
+  const hasConsecutive = consecutiveWarningsSummary.length > 0;
 
   return {
     success: true,
-    message: ok
-      ? `Generated a complete, clash-free timetable across ${affectedClassIds.length} classes (${blockedSlots.length} Step 0 fixed slots preserved).`
-      : `Generated with ${result.unresolved.length} unplaced hour(s) and ${result.fixedClashes.length} fixed-slot clash(es) — see below for manual placement.`,
+    message:
+      !hasUnresolvedOrClash && !hasConsecutive
+        ? `Generated a complete, clash-free timetable across ${affectedClassIds.length} classes (${blockedSlots.length} Step 0 fixed slots preserved).`
+        : hasUnresolvedOrClash
+          ? `Generated with ${result.unresolved.length} unplaced hour(s) and ${result.fixedClashes.length} fixed-slot clash(es) — see report below.`
+          : `Generated a clash-free timetable across ${affectedClassIds.length} classes with ${consecutiveWarningsSummary.length} unavoidable back-to-back period warning(s).`,
     classesAffected: affectedClassIds.length,
     slotsPlaced: result.slots.length + blockedSlots.length,
     unresolved: unresolvedSummary,
     fixedClashes: fixedClashSummary,
+    consecutiveWarnings: consecutiveWarningsSummary,
     attemptsUsed: result.attemptsUsed,
     staffWarnings: allStaffWarnings,
   };
@@ -458,6 +515,7 @@ function failure(message: string, staffWarnings: string[] = []): GenerateRunSumm
     slotsPlaced: 0,
     unresolved: [],
     fixedClashes: [],
+    consecutiveWarnings: [],
     attemptsUsed: 0,
     staffWarnings,
   };

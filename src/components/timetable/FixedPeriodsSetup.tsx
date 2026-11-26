@@ -11,12 +11,14 @@
 // - Instant click-to-assign & click-again-to-clear with automatic persistence
 // ============================================================================
 
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import type {
   FixedPeriodType,
   FixedPeriodsByClass,
   TTClass,
   TTFixedPeriodSlot,
+  TTStaff,
 } from '../../lib/timetable/types';
 import {
   DAY_ORDERS,
@@ -33,8 +35,9 @@ import {
   persistFixedPeriodCellToSupabase,
   persistFixedPeriodsForClassToSupabase,
 } from '../../lib/timetable/fixed-periods-api';
+import { findTTStaff } from '../../lib/staffUtils';
 import { saveFixedPeriodsMemory } from '../../lib/memoryStorage';
-import { PageHeader, Panel, StatusBanner, SecondaryButton, PrimaryButton } from './ui';
+import { PageHeader, Panel, StatusBanner, SecondaryButton, PrimaryButton, inputClass } from './ui';
 import {
   Lock,
   Languages,
@@ -46,10 +49,12 @@ import {
   Info,
   ArrowRight,
   CheckCircle2,
+  X,
 } from 'lucide-react';
 
 interface Props {
   classes: TTClass[];
+  staff: TTStaff[];
   fixedPeriodsByClass: FixedPeriodsByClass;
   onFixedPeriodsChange: (updated: FixedPeriodsByClass) => void;
   onProceedToWorkload?: () => void;
@@ -96,6 +101,7 @@ const TOOL_STYLES: Record<
 
 export default function FixedPeriodsSetup({
   classes,
+  staff,
   fixedPeriodsByClass,
   onFixedPeriodsChange,
   onProceedToWorkload,
@@ -104,6 +110,16 @@ export default function FixedPeriodsSetup({
   const [selectedGroupId, setSelectedGroupId] = useState<string>(() => yearGroups[0]?.id || 'I-BCOM');
   const [activeTool, setActiveTool] = useState<ToolMode>('LANG');
   const [lastSavedNotice, setLastSavedNotice] = useState<string | null>(null);
+  const [editingCell, setEditingCell] = useState<{
+    classId: string;
+    dayOrder: number;
+    period: number;
+    slotType: FixedPeriodType;
+    anchorRect: { top: number; left: number; bottom: number; width: number };
+  } | null>(null);
+  const [staffCodeInput, setStaffCodeInput] = useState('');
+  const [staffInputError, setStaffInputError] = useState<string | null>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (yearGroups.length > 0 && !yearGroups.some((g) => g.id === selectedGroupId)) {
@@ -131,6 +147,83 @@ export default function FixedPeriodsSetup({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedGroupId]);
 
+  // Close floating staff editor on Escape or outside click
+  useEffect(() => {
+    if (!editingCell) return;
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setEditingCell(null);
+      }
+    };
+    const handleMouseDown = (e: MouseEvent) => {
+      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
+        setEditingCell(null);
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => {
+      window.removeEventListener('keydown', handleKey);
+      document.removeEventListener('mousedown', handleMouseDown);
+    };
+  }, [editingCell]);
+
+  const findExactStaffByCode = (raw: string): TTStaff | undefined => {
+    const q = raw.trim().toUpperCase();
+    if (!q) return undefined;
+    return staff.find((s) => s.short_code.trim().toUpperCase() === q);
+  };
+
+  const commitCellAssignedStaff = (
+    classId: string,
+    dayOrder: number,
+    period: number,
+    slotType: FixedPeriodType,
+    assignedStaff: TTStaff | null
+  ) => {
+    const staffIdOrNull = assignedStaff ? assignedStaff.id : null;
+    const updatedMap = computeNextFixedPeriodsMap(
+      fixedPeriodsByClass,
+      classId,
+      dayOrder,
+      period,
+      slotType,
+      staffIdOrNull
+    );
+    onFixedPeriodsChange(updatedMap);
+    setLastSavedNotice(
+      assignedStaff
+        ? `Assigned ${assignedStaff.short_code} to ${slotType} on Day ${DAY_ORDER_LABELS[dayOrder as keyof typeof DAY_ORDER_LABELS]} · P${period}`
+        : `Cleared optional staff on ${slotType} (Day ${DAY_ORDER_LABELS[dayOrder as keyof typeof DAY_ORDER_LABELS]} · P${period})`
+    );
+    void persistFixedPeriodCellToSupabase(classId, dayOrder, period, slotType, staffIdOrNull);
+  };
+
+  const openStaffEditor = (
+    classId: string,
+    dayOrder: number,
+    period: number,
+    slotType: FixedPeriodType,
+    currentAssigned: TTStaff | undefined,
+    triggerEl: HTMLElement
+  ) => {
+    const rect = triggerEl.getBoundingClientRect();
+    setStaffCodeInput(currentAssigned?.short_code || '');
+    setStaffInputError(null);
+    setEditingCell({
+      classId,
+      dayOrder,
+      period,
+      slotType,
+      anchorRect: {
+        top: rect.top,
+        left: rect.left,
+        bottom: rect.bottom,
+        width: rect.width,
+      },
+    });
+  };
+
   const handleCellClick = (classId: string, dayOrder: number, period: number, existingType: FixedPeriodType | null) => {
     let nextType: FixedPeriodType | null;
     if (activeTool === 'CLEAR') {
@@ -140,6 +233,15 @@ export default function FixedPeriodsSetup({
       nextType = null;
     } else {
       nextType = activeTool;
+    }
+
+    if (
+      editingCell &&
+      editingCell.classId === classId &&
+      editingCell.dayOrder === dayOrder &&
+      editingCell.period === period
+    ) {
+      setEditingCell(null);
     }
 
     const updatedMap = computeNextFixedPeriodsMap(
@@ -157,7 +259,16 @@ export default function FixedPeriodsSetup({
     );
 
     // Non-blocking sync to Supabase
-    void persistFixedPeriodCellToSupabase(classId, dayOrder, period, nextType);
+    const updatedSlot = updatedMap[classId]?.find(
+      (s) => s.day_order === dayOrder && s.period === period
+    );
+    void persistFixedPeriodCellToSupabase(
+      classId,
+      dayOrder,
+      period,
+      nextType,
+      updatedSlot?.assigned_staff_id ?? null
+    );
   };
 
   const handleApplyYearDefaults = () => {
@@ -328,39 +439,86 @@ export default function FixedPeriodsSetup({
                     const assigned = cellLookup.get(`${day}_${periodNum}`);
                     const slotType = assigned?.slot_type ?? null;
                     const style = slotType ? TOOL_STYLES[slotType] : null;
+                    const assignedStaff =
+                      assigned?.assigned_staff_id
+                        ? findTTStaff(staff, assigned.assigned_staff_id)
+                        : undefined;
 
                     return (
                       <td
                         key={`${day}_${periodNum}`}
                         className="border-b border-r last:border-r-0 border-[#E4DCC9] p-1 text-center align-middle"
                       >
-                        <button
-                          type="button"
-                          onClick={() => handleCellClick(sec.classId, day, periodNum, slotType)}
-                          onContextMenu={(e) => {
-                            e.preventDefault();
-                            if (slotType) handleCellClick(sec.classId, day, periodNum, slotType);
-                          }}
-                          title={
-                            slotType
-                              ? `${TOOL_STYLES[slotType].fullName} locked on Day ${DAY_ORDER_LABELS[day]} Period ${periodNum}. Click to toggle/replace.`
-                              : `Open slot — click to mark as ${activeTool === 'CLEAR' ? 'Open' : activeTool}`
-                          }
-                          className={`w-full min-h-[34px] rounded-xs border text-[11px] font-mono font-semibold transition-all flex items-center justify-center gap-0.5 cursor-pointer ${
-                            style
-                              ? `${style.cellBg} ${style.cellText} ${style.cellBorder} shadow-2xs hover:brightness-95`
-                              : 'bg-white border-dashed border-[#DDD4C1] text-[#B8A98A] hover:border-[#3A0D0D]/50 hover:bg-[#FAF7F1] hover:text-[#3A0D0D]'
-                          }`}
-                        >
-                          {style ? (
-                            <>
-                              <Lock className="w-2.5 h-2.5 opacity-70 shrink-0" />
-                              <span>{style.label}</span>
-                            </>
-                          ) : (
+                        {style && slotType ? (
+                          <div
+                            className={`w-full min-h-[34px] rounded-xs border text-[11px] font-mono font-semibold transition-all flex flex-col items-center justify-center ${style.cellBg} ${style.cellText} ${style.cellBorder} shadow-2xs`}
+                          >
+                            <div className="w-full px-1 pt-0.5 flex items-center justify-center gap-0.5 leading-tight flex-wrap">
+                              <button
+                                type="button"
+                                onClick={() => handleCellClick(sec.classId, day, periodNum, slotType)}
+                                onContextMenu={(e) => {
+                                  e.preventDefault();
+                                  handleCellClick(sec.classId, day, periodNum, slotType);
+                                }}
+                                title={`${TOOL_STYLES[slotType].fullName} locked on Day ${DAY_ORDER_LABELS[day]} Period ${periodNum}${assignedStaff ? ` (${assignedStaff.short_code} — ${assignedStaff.full_name})` : ''}. Click to toggle/replace.`}
+                                className="inline-flex items-center justify-center gap-0.5 leading-tight hover:brightness-95 cursor-pointer"
+                              >
+                                <Lock className="w-2.5 h-2.5 opacity-70 shrink-0" />
+                                <span>{style.label}</span>
+                              </button>
+                              {assignedStaff && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openStaffEditor(
+                                      sec.classId,
+                                      day,
+                                      periodNum,
+                                      slotType,
+                                      assignedStaff,
+                                      e.currentTarget
+                                    );
+                                  }}
+                                  title={`Assigned: ${assignedStaff.short_code} — ${assignedStaff.full_name} (click to edit or clear)`}
+                                  className="px-1 rounded bg-white/80 border border-current/25 text-[9.5px] font-bold leading-tight hover:bg-white cursor-pointer"
+                                >
+                                  ({assignedStaff.short_code})
+                                </button>
+                              )}
+                            </div>
+                            {!assignedStaff && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openStaffEditor(
+                                    sec.classId,
+                                    day,
+                                    periodNum,
+                                    slotType,
+                                    undefined,
+                                    e.currentTarget
+                                  );
+                                }}
+                                title="Optional: assign a staff member to this fixed period"
+                                className="text-[9px] leading-none font-normal opacity-60 hover:opacity-100 hover:underline pb-0.5 cursor-pointer"
+                              >
+                                + Add staff
+                              </button>
+                            )}
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleCellClick(sec.classId, day, periodNum, slotType)}
+                            title={`Open slot — click to mark as ${activeTool === 'CLEAR' ? 'Open' : activeTool}`}
+                            className="w-full min-h-[34px] rounded-xs border text-[11px] font-mono font-semibold transition-all flex items-center justify-center gap-0.5 cursor-pointer bg-white border-dashed border-[#DDD4C1] text-[#B8A98A] hover:border-[#3A0D0D]/50 hover:bg-[#FAF7F1] hover:text-[#3A0D0D]"
+                          >
                             <span className="text-[10px] font-normal opacity-60">Open</span>
-                          )}
-                        </button>
+                          </button>
+                        )}
                       </td>
                     );
                   })}
@@ -541,6 +699,171 @@ export default function FixedPeriodsSetup({
       >
         {currentGroup?.sections.map((sec) => renderSectionGrid(sec))}
       </div>
+
+      {/* Anchored Optional Staff Assignment Popover (never resizes or reflows grid) */}
+      {editingCell &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            ref={popoverRef}
+            style={{
+              position: 'fixed',
+              top: Math.min(
+                editingCell.anchorRect.bottom + 6,
+                Math.max(12, window.innerHeight - 175)
+              ),
+              left: Math.min(
+                Math.max(12, editingCell.anchorRect.left + editingCell.anchorRect.width / 2 - 128),
+                Math.max(12, window.innerWidth - 272)
+              ),
+            }}
+            className="z-50 w-64 bg-white border border-[#C9BEA4] rounded-md shadow-xl p-2.5 space-y-2"
+          >
+            <div className="flex items-center justify-between border-b border-[#EDE7D8] pb-1">
+              <span className="text-[11px] font-serif font-semibold text-[#3A0D0D]">
+                {editingCell.slotType} · Day{' '}
+                {DAY_ORDER_LABELS[editingCell.dayOrder as keyof typeof DAY_ORDER_LABELS]} P
+                {editingCell.period} — Staff (Optional)
+              </span>
+              <button
+                type="button"
+                onClick={() => setEditingCell(null)}
+                className="text-[#8A806D] hover:text-[#3A0D0D] p-0.5 cursor-pointer"
+                aria-label="Close staff selector"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <input
+              type="text"
+              autoFocus
+              autoComplete="off"
+              placeholder="Staff code (e.g. TP)"
+              className={`${inputClass} uppercase font-mono text-xs py-1`}
+              value={staffCodeInput}
+              onChange={(e) => {
+                const val = e.target.value;
+                setStaffCodeInput(val);
+                const trimmed = val.trim();
+                if (!trimmed) {
+                  setStaffInputError(null);
+                  commitCellAssignedStaff(
+                    editingCell.classId,
+                    editingCell.dayOrder,
+                    editingCell.period,
+                    editingCell.slotType,
+                    null
+                  );
+                  return;
+                }
+                const match = findExactStaffByCode(trimmed);
+                if (match) {
+                  setStaffInputError(null);
+                  commitCellAssignedStaff(
+                    editingCell.classId,
+                    editingCell.dayOrder,
+                    editingCell.period,
+                    editingCell.slotType,
+                    match
+                  );
+                } else {
+                  setStaffInputError(null);
+                }
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  const trimmed = staffCodeInput.trim();
+                  if (!trimmed) {
+                    setEditingCell(null);
+                    return;
+                  }
+                  const match = findExactStaffByCode(trimmed);
+                  if (match) {
+                    setStaffInputError(null);
+                    commitCellAssignedStaff(
+                      editingCell.classId,
+                      editingCell.dayOrder,
+                      editingCell.period,
+                      editingCell.slotType,
+                      match
+                    );
+                    setEditingCell(null);
+                  } else {
+                    setStaffInputError(`Unknown code "${trimmed.toUpperCase()}". Pick from directory below.`);
+                  }
+                }
+              }}
+            />
+
+            <select
+              className="text-[11px] bg-[#FAF7F1] border border-[#E4DCC9] rounded px-2 py-1 text-[#4A4038] w-full focus:outline-hidden"
+              value={findExactStaffByCode(staffCodeInput)?.short_code || ''}
+              onChange={(e) => {
+                const pickedCode = e.target.value;
+                if (!pickedCode) return;
+                const pickedStaff = findExactStaffByCode(pickedCode);
+                if (!pickedStaff) return;
+                setStaffCodeInput(pickedStaff.short_code);
+                setStaffInputError(null);
+                commitCellAssignedStaff(
+                  editingCell.classId,
+                  editingCell.dayOrder,
+                  editingCell.period,
+                  editingCell.slotType,
+                  pickedStaff
+                );
+                setEditingCell(null);
+              }}
+            >
+              <option value="">Quick pick from Staff Directory…</option>
+              {staff.map((s) => (
+                <option key={s.id} value={s.short_code}>
+                  {s.short_code} — {s.full_name}
+                  {s.is_hod ? ' (HOD)' : ''}
+                </option>
+              ))}
+            </select>
+
+            {staffInputError && (
+              <p className="text-[10px] text-[#8C1F1F] leading-tight">{staffInputError}</p>
+            )}
+
+            <div className="flex items-center justify-between pt-0.5">
+              {staffCodeInput.trim() ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStaffCodeInput('');
+                    setStaffInputError(null);
+                    commitCellAssignedStaff(
+                      editingCell.classId,
+                      editingCell.dayOrder,
+                      editingCell.period,
+                      editingCell.slotType,
+                      null
+                    );
+                    setEditingCell(null);
+                  }}
+                  className="text-[10px] text-[#8C1F1F] hover:underline cursor-pointer"
+                >
+                  Clear staff
+                </button>
+              ) : (
+                <span className="text-[10px] text-[#7C6E59]">Optional · saves instantly</span>
+              )}
+              <button
+                type="button"
+                onClick={() => setEditingCell(null)}
+                className="text-[10px] font-semibold text-[#3A0D0D] hover:underline cursor-pointer"
+              >
+                Done
+              </button>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 }

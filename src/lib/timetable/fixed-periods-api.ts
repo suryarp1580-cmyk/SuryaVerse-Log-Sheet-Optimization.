@@ -193,6 +193,7 @@ function normalizeFixedPeriodsMap(
         day_order: Number(s.day_order),
         period: Number(s.period),
         slot_type: s.slot_type as FixedPeriodType,
+        assigned_staff_id: s.assigned_staff_id ?? s.assignedStaffId ?? null,
       };
       if (existingIdx >= 0) {
         normalized[activeCid][existingIdx] = cleanSlot;
@@ -345,12 +346,19 @@ export function computeNextFixedPeriodsMap(
   classId: string,
   dayOrder: number,
   period: number,
-  slotType: FixedPeriodType | null
+  slotType: FixedPeriodType | null,
+  assignedStaffId?: string | null
 ): FixedPeriodsByClass {
   const existingList = Array.isArray(currentMap[classId]) ? currentMap[classId] : [];
+  const prevSlot = existingList.find(
+    (s) => s.day_order === dayOrder && s.period === period
+  );
   const filtered = existingList.filter(
     (s) => !(s.day_order === dayOrder && s.period === period)
   );
+
+  const resolvedStaffId =
+    assignedStaffId !== undefined ? assignedStaffId : (prevSlot?.assigned_staff_id ?? null);
 
   const nextList =
     slotType === null
@@ -362,6 +370,7 @@ export function computeNextFixedPeriodsMap(
             day_order: dayOrder,
             period,
             slot_type: slotType,
+            assigned_staff_id: resolvedStaffId,
           },
         ];
 
@@ -374,11 +383,19 @@ export function computeNextFixedPeriodsMap(
   return nextMap;
 }
 
+function isMissingColumnError(err: any): boolean {
+  if (!err) return false;
+  const code = String(err.code || '');
+  const msg = String(err.message || '').toLowerCase();
+  return code === 'PGRST204' || code === '42703' || msg.includes('assigned_staff_id');
+}
+
 export async function persistFixedPeriodCellToSupabase(
   classId: string,
   dayOrder: number,
   period: number,
-  slotType: FixedPeriodType | null
+  slotType: FixedPeriodType | null,
+  assignedStaffId?: string | null
 ): Promise<void> {
   try {
     if (slotType === null) {
@@ -389,17 +406,25 @@ export async function persistFixedPeriodCellToSupabase(
         .eq('day_order', dayOrder)
         .eq('period', period);
     } else {
-      await supabase
+      const payload = {
+        class_id: classId,
+        day_order: dayOrder,
+        period,
+        slot_type: slotType,
+        assigned_staff_id: assignedStaffId ?? null,
+      };
+      const { error } = await supabase
         .from('tt_fixed_periods')
-        .upsert(
-          {
-            class_id: classId,
-            day_order: dayOrder,
-            period,
-            slot_type: slotType,
-          },
-          { onConflict: 'class_id,day_order,period' }
-        );
+        .upsert(payload, { onConflict: 'class_id,day_order,period' });
+
+      if (error && isMissingColumnError(error)) {
+        await supabase
+          .from('tt_fixed_periods')
+          .upsert(
+            { class_id: classId, day_order: dayOrder, period, slot_type: slotType },
+            { onConflict: 'class_id,day_order,period' }
+          );
+      }
     }
   } catch (err) {
     if (!isExpectedSupabaseFallbackError(err)) {
@@ -419,9 +444,28 @@ export async function persistFixedPeriodsForClassToSupabase(
       .eq('class_id', classId);
 
     if (!delErr && slots.length > 0) {
-      await supabase
+      const payload = slots.map((s) => ({
+        class_id: s.class_id,
+        day_order: s.day_order,
+        period: s.period,
+        slot_type: s.slot_type,
+        assigned_staff_id: s.assigned_staff_id ?? null,
+      }));
+      const { error: upsertErr } = await supabase
         .from('tt_fixed_periods')
-        .upsert(slots, { onConflict: 'class_id,day_order,period' });
+        .upsert(payload, { onConflict: 'class_id,day_order,period' });
+
+      if (upsertErr && isMissingColumnError(upsertErr)) {
+        const legacyPayload = slots.map((s) => ({
+          class_id: s.class_id,
+          day_order: s.day_order,
+          period: s.period,
+          slot_type: s.slot_type,
+        }));
+        await supabase
+          .from('tt_fixed_periods')
+          .upsert(legacyPayload, { onConflict: 'class_id,day_order,period' });
+      }
     }
   } catch (err) {
     if (!isExpectedSupabaseFallbackError(err)) {

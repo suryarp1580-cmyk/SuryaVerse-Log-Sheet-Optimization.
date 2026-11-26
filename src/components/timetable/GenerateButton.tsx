@@ -35,7 +35,10 @@ export default function GenerateButton() {
         <div className="space-y-4">
           <StatusBanner
             tone={
-              summary.success && summary.unresolved.length === 0 && summary.fixedClashes.length === 0
+              summary.success &&
+              summary.unresolved.length === 0 &&
+              summary.fixedClashes.length === 0 &&
+              summary.consecutiveWarnings.length === 0
                 ? 'success'
                 : summary.success
                   ? 'warning'
@@ -62,32 +65,78 @@ export default function GenerateButton() {
             </dl>
           )}
 
-          {summary.fixedClashes.length > 0 && (
-            <div>
-              <h2 className="text-sm font-medium text-[#8C1F1F] mb-2">
-                Fixed-slot clashes — fix these in Workload Entry first
+          {summary.success && (
+            <Panel className="p-4 space-y-3">
+              <h2 className="text-sm font-serif font-semibold text-[#3A0D0D]">
+                Constraint &amp; Spacing Summary
               </h2>
-              <ul className="space-y-1 text-sm">
-                {summary.fixedClashes.map((c, i) => (
-                  <li key={i} className="border-l-4 border-[#8C1F1F] bg-[#FBEAEA] px-3 py-2 text-[#6B1717]">
-                    {c.classCode} · Day Order {c.dayOrder}, Period {c.period} — {c.reason}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
 
-          {summary.unresolved.length > 0 && (
-            <div>
-              <h2 className="text-sm font-medium text-[#A9631A] mb-2">Needs manual placement — no free slot found</h2>
-              <ul className="space-y-1 text-sm">
-                {summary.unresolved.map((u, i) => (
-                  <li key={i} className="border-l-4 border-[#A9631A] bg-[#FBF1E6] px-3 py-2 text-[#7A480F]">
-                    {u.classCode} · {u.subjectCode} ({u.staffName}) — {u.missingHours} hour(s) unplaced
-                  </li>
-                ))}
-              </ul>
-            </div>
+              {summary.fixedClashes.length === 0 &&
+              summary.unresolved.length === 0 &&
+              summary.consecutiveWarnings.length === 0 ? (
+                <p className="text-sm text-[#3F6634] font-medium">
+                  No clashes. No consecutive periods.
+                </p>
+              ) : (
+                <div className="space-y-4">
+                  {summary.fixedClashes.length > 0 && (
+                    <div>
+                      <h3 className="text-xs font-semibold uppercase tracking-wide text-[#8C1F1F] mb-1.5">
+                        Fixed-slot clashes ({summary.fixedClashes.length})
+                      </h3>
+                      <ul className="space-y-1 text-sm">
+                        {summary.fixedClashes.map((c, i) => (
+                          <li
+                            key={i}
+                            className="border-l-4 border-[#8C1F1F] bg-[#FBEAEA] px-3 py-2 text-[#6B1717]"
+                          >
+                            {c.classCode} · Day Order {c.dayOrder}, Period {c.period} — {c.reason}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {summary.unresolved.length > 0 && (
+                    <div>
+                      <h3 className="text-xs font-semibold uppercase tracking-wide text-[#A9631A] mb-1.5">
+                        Unplaced subjects — could not be placed without a staff clash (
+                        {summary.unresolved.length})
+                      </h3>
+                      <ul className="space-y-1 text-sm">
+                        {summary.unresolved.map((u, i) => (
+                          <li
+                            key={i}
+                            className="border-l-4 border-[#A9631A] bg-[#FBF1E6] px-3 py-2 text-[#7A480F]"
+                          >
+                            {u.classCode} · {u.subjectCode} ({u.staffCode} — {u.staffName}) —{' '}
+                            {u.missingHours} hour(s) unplaced
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {summary.consecutiveWarnings.length > 0 && (
+                    <div>
+                      <h3 className="text-xs font-semibold uppercase tracking-wide text-[#A9631A] mb-1.5">
+                        Unavoidable back-to-back periods ({summary.consecutiveWarnings.length})
+                      </h3>
+                      <ul className="space-y-1 text-sm">
+                        {summary.consecutiveWarnings.map((cw, i) => (
+                          <li
+                            key={i}
+                            className="border-l-4 border-[#A9631A] bg-[#FBF1E6] px-3 py-2 text-[#7A480F]"
+                          >
+                            {cw.text}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+            </Panel>
           )}
 
           {summary.staffWarnings && summary.staffWarnings.length > 0 && (

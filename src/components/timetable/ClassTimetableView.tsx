@@ -9,16 +9,19 @@
 import { useEffect, useRef, useState, useTransition } from 'react';
 import TimetableGrid from './TimetableGrid';
 import type { ClassTimetableData } from '../../lib/timetable/grid-types';
+import type { TTClass, TTStaff } from '../../lib/timetable/types';
 import { manuallyPlaceSlot, removeSlot, getClassTimetable } from '../../lib/timetable/view-api';
-import { buildTimetablePdfFilename, exportTimetableToPdf } from '../../lib/timetable/export-pdf';
+import { downloadClassTimetablePdf } from '../../lib/timetable/export-pdf';
 import { Panel, PrimaryButton, SecondaryButton, inputClass } from './ui';
 import { Download, Loader2, Printer } from 'lucide-react';
 
 interface Props {
   initialData: ClassTimetableData;
+  classes?: TTClass[];
+  staff?: TTStaff[];
 }
 
-export default function ClassTimetableView({ initialData }: Props) {
+export default function ClassTimetableView({ initialData, classes = [], staff = [] }: Props) {
   const [data, setData] = useState(initialData);
   const [isPending, startTransition] = useTransition();
   const [pendingCell, setPendingCell] = useState<{ dayOrder: number; period: number } | null>(null);
@@ -69,15 +72,14 @@ export default function ClassTimetableView({ initialData }: Props) {
   }
 
   async function handleDownload() {
-    if (isDownloading || !exportRef.current) return;
+    if (isDownloading) return;
     setIsDownloading(true);
     setStatusMessage(null);
     try {
-      const fileName = buildTimetablePdfFilename(data.classDisplayName, 'Class');
-      await exportTimetableToPdf(exportRef.current, fileName);
+      const fileName = await downloadClassTimetablePdf(data, classes, staff);
       setStatusMessage({ text: `Downloaded ${fileName} to your PC.`, ok: true });
     } catch (err: any) {
-      setStatusMessage({ text: err?.message || 'Failed to download timetable PDF.', ok: false });
+      setStatusMessage({ text: err?.message || 'Failed to download Class Timetable PDF.', ok: false });
     } finally {
       setIsDownloading(false);
     }
@@ -96,14 +98,14 @@ export default function ClassTimetableView({ initialData }: Props) {
             type="button"
             onClick={handleDownload}
             disabled={isDownloading}
-            title="Download Class Timetable as PDF to your PC"
+            title="Download Class Timetable as A4 Portrait PDF"
           >
             {isDownloading ? (
               <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
             ) : (
               <Download className="w-4 h-4 mr-1.5" />
             )}
-            <span>{isDownloading ? 'Downloading…' : 'Download'}</span>
+            <span>{isDownloading ? 'Generating PDF…' : 'Download Class Timetable (PDF)'}</span>
           </PrimaryButton>
         </div>
       </div>

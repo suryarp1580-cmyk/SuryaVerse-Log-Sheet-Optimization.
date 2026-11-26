@@ -80,6 +80,7 @@ export interface TTFixedPeriodSlot {
   day_order: number; // 1-6
   period: number; // 1-5
   slot_type: FixedPeriodType;
+  assigned_staff_id?: string | null;
 }
 
 export type FixedPeriodsByClass = Record<string, TTFixedPeriodSlot[]>;

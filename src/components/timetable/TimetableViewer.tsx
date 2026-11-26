@@ -5,14 +5,18 @@
 // ============================================================================
 
 import { useEffect, useState, useTransition } from 'react';
-import type { TTClass, TTStaff } from '@/lib/timetable/types';
-import type { ClassTimetableData, StaffTimetableData } from '@/lib/timetable/grid-types';
+import type { TTClass, TTStaff } from '../../lib/timetable/types';
+import type { ClassTimetableData, StaffTimetableData } from '../../lib/timetable/grid-types';
 import { getClassTimetable, getStaffTimetable } from '../../lib/timetable/view-api';
+import {
+  downloadAllClassesTimetablePdf,
+  downloadAllStaffTimetablePdf,
+} from '../../lib/timetable/export-pdf';
 import { getActiveSupabaseUrl, getSupabaseProjectRef, isSupabaseConfigured } from '../../lib/supabaseClient';
 import ClassTimetableView from './ClassTimetableView';
 import StaffTimetableView from './StaffTimetableView';
-import { PageHeader, inputClass } from './ui';
-import { AlertCircle, RefreshCw, Globe, Sparkles } from 'lucide-react';
+import { PageHeader, SecondaryButton, inputClass } from './ui';
+import { AlertCircle, Download, RefreshCw, Globe, Loader2 } from 'lucide-react';
 
 interface Props {
   classes: TTClass[];
@@ -30,9 +34,56 @@ export default function TimetableViewer({ classes, staff }: Props) {
   const [viewError, setViewError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
   const [isPending, startTransition] = useTransition();
+  const [isDownloadingAllClasses, setIsDownloadingAllClasses] = useState(false);
+  const [isDownloadingAllStaff, setIsDownloadingAllStaff] = useState(false);
+  const [bulkDownloadStatus, setBulkDownloadStatus] = useState<{ text: string; ok: boolean } | null>(null);
 
   const activeUrl = getActiveSupabaseUrl();
   const projectRef = getSupabaseProjectRef(activeUrl);
+
+  async function handleDownloadAllClasses() {
+    if (isDownloadingAllClasses || classes.length === 0) return;
+    setIsDownloadingAllClasses(true);
+    setBulkDownloadStatus(null);
+    try {
+      const fileName = await downloadAllClassesTimetablePdf(classes, staff, (cid) =>
+        getClassTimetable(cid, retryKey > 0)
+      );
+      setBulkDownloadStatus({
+        text: `Downloaded ${fileName} (${classes.length} classes, 1 per page).`,
+        ok: true,
+      });
+    } catch (err: any) {
+      setBulkDownloadStatus({
+        text: err?.message || 'Failed to download All Classes PDF.',
+        ok: false,
+      });
+    } finally {
+      setIsDownloadingAllClasses(false);
+    }
+  }
+
+  async function handleDownloadAllStaff() {
+    if (isDownloadingAllStaff || staff.length === 0) return;
+    setIsDownloadingAllStaff(true);
+    setBulkDownloadStatus(null);
+    try {
+      const fileName = await downloadAllStaffTimetablePdf(staff, classes, (sid) =>
+        getStaffTimetable(sid, retryKey > 0)
+      );
+      setBulkDownloadStatus({
+        text: `Downloaded ${fileName} (${staff.length} staff members, 1 per page).`,
+        ok: true,
+      });
+    } catch (err: any) {
+      setBulkDownloadStatus({
+        text: err?.message || 'Failed to download All Staff PDF.',
+        ok: false,
+      });
+    } finally {
+      setIsDownloadingAllStaff(false);
+    }
+  }
 
   useEffect(() => {
     if (tab === 'class' && selectedClassId) {
@@ -140,78 +191,120 @@ export default function TimetableViewer({ classes, staff }: Props) {
 
       <div className="flex gap-2 border-b border-[#E4DCC9]">
         <button
-          onClick={() => setTab('class')}
+          onClick={() => {
+            setTab('class');
+            setBulkDownloadStatus(null);
+          }}
           className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
             tab === 'class' ? 'border-[#D4AF37] text-[#3A0D0D]' : 'border-transparent text-[#8A806D] hover:text-[#4A4038]'
           }`}
         >
-          Class View
+          Class Wise
         </button>
         <button
-          onClick={() => setTab('staff')}
+          onClick={() => {
+            setTab('staff');
+            setBulkDownloadStatus(null);
+          }}
           className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
             tab === 'staff' ? 'border-[#D4AF37] text-[#3A0D0D]' : 'border-transparent text-[#8A806D] hover:text-[#4A4038]'
           }`}
         >
-          Staff View
+          Staff Wise
         </button>
       </div>
 
+      {bulkDownloadStatus && (
+        <p className={`text-sm ${bulkDownloadStatus.ok ? 'text-[#3F6634]' : 'text-[#8C1F1F]'}`}>
+          {bulkDownloadStatus.text}
+        </p>
+      )}
+
       {tab === 'class' && (
         <div className="space-y-4">
-          <div className="flex flex-wrap items-center gap-3">
-            <select
-              className={`${inputClass} sm:w-72`}
-              value={selectedClassId}
-              onChange={(e) => setSelectedClassId(e.target.value)}
-            >
-              {classes.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.display_name}
-                </option>
-              ))}
-            </select>
-            <button
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <select
+                className={`${inputClass} sm:w-72`}
+                value={selectedClassId}
+                onChange={(e) => setSelectedClassId(e.target.value)}
+              >
+                {classes.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.display_name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => setRetryKey((k) => k + 1)}
+                disabled={isPending}
+                title="Refresh and sync timetable directly from Supabase"
+                className="p-2 border border-[#E4DCC9] bg-white text-[#4A4038] hover:bg-[#FAF7F1] rounded-lg transition-colors"
+              >
+                <RefreshCw className={`w-4 h-4 text-[#8A806D] ${isPending ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
+            <SecondaryButton
               type="button"
-              onClick={() => setRetryKey((k) => k + 1)}
-              disabled={isPending}
-              title="Refresh and sync timetable directly from Supabase"
-              className="p-2 border border-[#E4DCC9] bg-white text-[#4A4038] hover:bg-[#FAF7F1] rounded-lg transition-colors"
+              onClick={handleDownloadAllClasses}
+              disabled={isDownloadingAllClasses || classes.length === 0}
+              title="Download all class timetables in a single PDF (1 class per page)"
             >
-              <RefreshCw className={`w-4 h-4 text-[#8A806D] ${isPending ? 'animate-spin' : ''}`} />
-            </button>
+              {isDownloadingAllClasses ? (
+                <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
+              ) : (
+                <Download className="w-4 h-4 mr-1.5" />
+              )}
+              <span>{isDownloadingAllClasses ? 'Generating All Classes…' : 'Download All Classes'}</span>
+            </SecondaryButton>
           </div>
           {isPending && !classData && <p className="text-sm text-[#8A806D]">Loading schedule…</p>}
-          {classData && <ClassTimetableView initialData={classData} />}
+          {classData && <ClassTimetableView initialData={classData} classes={classes} staff={staff} />}
         </div>
       )}
 
       {tab === 'staff' && (
         <div className="space-y-4">
-          <div className="flex flex-wrap items-center gap-3">
-            <select
-              className={`${inputClass} sm:w-72`}
-              value={selectedStaffId}
-              onChange={(e) => setSelectedStaffId(e.target.value)}
-            >
-              {staff.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.short_code} — {s.full_name}
-                </option>
-              ))}
-            </select>
-            <button
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <select
+                className={`${inputClass} sm:w-72`}
+                value={selectedStaffId}
+                onChange={(e) => setSelectedStaffId(e.target.value)}
+              >
+                {staff.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.short_code} — {s.full_name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => setRetryKey((k) => k + 1)}
+                disabled={isPending}
+                title="Refresh and sync timetable directly from Supabase"
+                className="p-2 border border-[#E4DCC9] bg-white text-[#4A4038] hover:bg-[#FAF7F1] rounded-lg transition-colors"
+              >
+                <RefreshCw className={`w-4 h-4 text-[#8A806D] ${isPending ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
+            <SecondaryButton
               type="button"
-              onClick={() => setRetryKey((k) => k + 1)}
-              disabled={isPending}
-              title="Refresh and sync timetable directly from Supabase"
-              className="p-2 border border-[#E4DCC9] bg-white text-[#4A4038] hover:bg-[#FAF7F1] rounded-lg transition-colors"
+              onClick={handleDownloadAllStaff}
+              disabled={isDownloadingAllStaff || staff.length === 0}
+              title="Download all staff timetables in a single PDF (1 staff member per page)"
             >
-              <RefreshCw className={`w-4 h-4 text-[#8A806D] ${isPending ? 'animate-spin' : ''}`} />
-            </button>
+              {isDownloadingAllStaff ? (
+                <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
+              ) : (
+                <Download className="w-4 h-4 mr-1.5" />
+              )}
+              <span>{isDownloadingAllStaff ? 'Generating All Staff…' : 'Download All Staff'}</span>
+            </SecondaryButton>
           </div>
           {isPending && !staffData && <p className="text-sm text-[#8A806D]">Loading schedule…</p>}
-          {staffData && <StaffTimetableView data={staffData} />}
+          {staffData && <StaffTimetableView data={staffData} classes={classes} staff={staff} />}
         </div>
       )}
     </div>
